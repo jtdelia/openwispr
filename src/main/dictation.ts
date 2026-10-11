@@ -1,9 +1,9 @@
 import { clipboard } from 'electron'
 import { Channel, type RecorderEvent, type Sound } from '../shared/api'
 import { Key } from '../shared/keycodes'
-import { isLocalEndpoint, type DictationMode, type HistoryEntry, type HistoryStatus } from '../shared/types'
+import type { DictationMode, HistoryEntry, HistoryStatus } from '../shared/types'
 import type { AppInfo, Helper, TextBoxInfo } from './helper'
-import { complete, transcribe } from './providers'
+import type { Models } from './models'
 import type { Gesture, ShortcutEngine } from './shortcutEngine'
 import type { Store } from './store'
 import {
@@ -48,6 +48,7 @@ export class DictationController {
   constructor(
     private readonly helper: Helper,
     private readonly store: Store,
+    private readonly models: Models,
     private readonly windows: Windows,
     private readonly engine: ShortcutEngine,
   ) {}
@@ -96,9 +97,10 @@ export class DictationController {
   start(mode: DictationMode): void {
     if (this.phase.kind !== 'idle') return
     const settings = this.store.settings
-    if (!settings.transcription.apiKey && !isLocalEndpoint(settings.transcription.baseUrl)) {
+    const speechToText = this.models.availability('speechToText')
+    if (!speechToText.available) {
       this.engine.reset()
-      this.notice('Add a transcription API key in Settings', 'error')
+      this.notice(speechToText.reason, 'error')
       this.windows.showHub().webContents.send(Channel.dataChanged, 'settings')
       return
     }
@@ -186,11 +188,9 @@ export class DictationController {
 
     let asrText = ''
     try {
-      asrText = await transcribe(
-        settings.transcription,
-        wav,
-        transcriptionPrompt(this.store.dictionary, settings.userName),
-      )
+      asrText = await this.models.transcribe(wav, {
+        prompt: transcriptionPrompt(this.store.dictionary, settings.userName),
+      })
       if (!isCurrent()) return
       const text = asrText ? await this.format(asrText, focus) : ''
       if (!isCurrent()) return
@@ -225,10 +225,9 @@ export class DictationController {
     if (snippet !== null) return snippet
 
     let text = applyReplacements(asrText, dictionary)
-    if (settings.cleanup.enabled && settings.cleanup.apiKey) {
+    if (settings.cleanup.enabled && this.models.availability('chat').available) {
       const category = appCategory(focus.app.bundleId, focus.app.windowTitle)
-      const output = await complete(
-        settings.cleanup,
+      const output = await this.models.complete(
         cleanupMessages({
           transcript: text,
           style: settings.styles[styleContext(category, focus.app.bundleId, focus.app.windowTitle)],

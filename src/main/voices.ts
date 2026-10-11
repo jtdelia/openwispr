@@ -1,4 +1,4 @@
-import type { KnownSpeakers, TranscriptSegment } from './providers'
+import type { KnownSpeakers, TranscriptSegment } from './models'
 
 const WAV_HEADER_BYTES = 44
 /** OpenAI accepts 2-10 s reference clips and up to four known speakers per request. */

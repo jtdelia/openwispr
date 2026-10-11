@@ -15,9 +15,9 @@ export function HomePage({ navigate }: { navigate: (page: Page) => void }) {
   const setupItems = [
     !permissions?.accessibility && 'Grant Accessibility access so OpenWispr can hear your shortcut and paste text',
     permissions && permissions.microphone !== 'granted' && 'Allow microphone access',
-    settings &&
-      !settings.transcription.hasApiKey &&
-      !isLocalEndpoint(settings.transcription.baseUrl) &&
+    settings?.speechToText.kind === 'endpoint' &&
+      !settings.speechToText.hasApiKey &&
+      !isLocalEndpoint(settings.speechToText.baseUrl) &&
       'Add a transcription API key',
     permissions && !permissions.helperRunning && 'Build the native helper (npm run helper:build)',
   ].filter(Boolean) as string[]

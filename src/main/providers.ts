@@ -1,12 +1,14 @@
-import type { ProviderConfig } from '../shared/types'
+import type { EndpointConfig } from '../shared/types'
 
 const TIMEOUT_MS = 60_000
+
+export type Fetch = typeof globalThis.fetch
 
 function endpoint(baseUrl: string, path: string): string {
   return `${baseUrl.replace(/\/+$/, '')}${path}`
 }
 
-function authHeaders(config: ProviderConfig): Record<string, string> {
+function authHeaders(config: EndpointConfig): Record<string, string> {
   return config.apiKey ? { Authorization: `Bearer ${config.apiKey}` } : {}
 }
 
@@ -23,7 +25,8 @@ async function failure(response: Response, what: string): Promise<Error> {
 
 /** OpenAI-compatible `/audio/transcriptions` (OpenAI, Groq, whisper.cpp server, LocalAI, …). */
 export async function transcribe(
-  config: ProviderConfig & { language: string },
+  fetch: Fetch,
+  config: EndpointConfig & { language: string },
   wav: Buffer,
   prompt: string,
 ): Promise<string> {
@@ -62,7 +65,7 @@ export interface KnownSpeakers {
 type SegmentFormat = 'diarized_json' | 'verbose_json' | 'json'
 
 /** Diarizing models label voices; Whisper models time their segments; others return plain text. */
-export function segmentFormat(model: string): SegmentFormat {
+function segmentFormat(model: string): SegmentFormat {
   if (/diariz/i.test(model)) return 'diarized_json'
   if (/whisper/i.test(model)) return 'verbose_json'
   return 'json'
@@ -73,7 +76,7 @@ interface TranscriptionResponse {
   segments?: Array<{ start?: number; end?: number; text?: string; speaker?: string }>
 }
 
-export function parseSegments(json: TranscriptionResponse, durationMs: number): TranscriptSegment[] {
+function parseSegments(json: TranscriptionResponse, durationMs: number): TranscriptSegment[] {
   const clamp = (seconds: number | undefined) => Math.min(durationMs, Math.max(0, Math.round((seconds ?? 0) * 1000)))
   const segments = (json.segments ?? [])
     .map((s) => ({
@@ -90,7 +93,8 @@ export function parseSegments(json: TranscriptionResponse, durationMs: number): 
 
 /** Like `transcribe`, but keeps the timing and, for diarizing models, the voice of each segment. */
 export async function transcribeSegments(
-  config: ProviderConfig & { language: string },
+  fetch: Fetch,
+  config: EndpointConfig & { language: string },
   wav: Buffer,
   durationMs: number,
   prompt: string,
@@ -131,10 +135,13 @@ export async function transcribeSegments(
   return parseSegments((await response.json()) as TranscriptionResponse, durationMs)
 }
 
+export type ChatMessage = { role: 'system' | 'user'; content: string }
+
 /** OpenAI-compatible `/chat/completions`. */
 export async function complete(
-  config: ProviderConfig,
-  messages: Array<{ role: 'system' | 'user'; content: string }>,
+  fetch: Fetch,
+  config: EndpointConfig,
+  messages: ChatMessage[],
   { label = 'Cleanup', timeoutMs = TIMEOUT_MS }: { label?: string; timeoutMs?: number } = {},
 ): Promise<string> {
   const response = await fetch(endpoint(config.baseUrl, '/chat/completions'), {

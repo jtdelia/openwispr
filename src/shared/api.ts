@@ -1,10 +1,12 @@
 import type {
   DictionaryEntry,
+  EndpointTestResult,
   FlowBarState,
   HistoryEntry,
   Meeting,
   MeetingDetail,
   MeetingPatch,
+  ModelRole,
   NotetakerState,
   PermissionStatus,
   PublicSettings,
@@ -53,6 +55,7 @@ export type FlowBarAction = 'startHandsFree' | 'stop' | 'cancel' | 'openHub'
 export interface OpenWisprApi {
   getSettings(): Promise<PublicSettings>
   updateSettings(patch: SettingsPatch): Promise<PublicSettings>
+  testEndpoint(role: ModelRole): Promise<EndpointTestResult>
   getHistory(): Promise<HistoryEntry[]>
   deleteHistoryEntry(id: string): Promise<void>
   clearHistory(): Promise<void>
@@ -97,6 +100,7 @@ export interface OpenWisprApi {
 export const Channel = {
   getSettings: 'settings:get',
   updateSettings: 'settings:update',
+  testEndpoint: 'models:test-endpoint',
   getHistory: 'history:get',
   deleteHistoryEntry: 'history:delete',
   clearHistory: 'history:clear',
