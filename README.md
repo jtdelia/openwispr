@@ -122,3 +122,9 @@ Accounts, sync, teams and Windows are out of scope ([ADR 0001](docs/adr/0001-loc
 Settings, dictionary and snippets live in `~/Library/Application Support/OpenWispr/openwispr.json`,
 and history (last 2000 dictations) in `history.json` next to it. Meetings live in `meetings.json` (titles,
 notes, summaries) plus one `meetings/<id>/live.ndjson` transcript per meeting. Audio is never written to disk.
+
+Downloaded Built-in models live in `models/<id>/` next to them, each with a `manifest.json` recording the
+Hugging Face repo, pinned revision, files, sizes and hashes. Settings → *Built-in models* downloads the
+Recommended models (shipped with the app, not fetched), resumes interrupted downloads, and verifies every
+file before marking the model installed: SHA-256 for Git LFS files, the Git blob hash for small files,
+which is all Hugging Face publishes for them. Downloaded models can't be selected until their engine ships.
