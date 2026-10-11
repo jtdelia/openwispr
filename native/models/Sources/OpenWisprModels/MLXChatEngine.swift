@@ -3,14 +3,13 @@ import MLX
 import MLXHuggingFace
 import MLXLLM
 import MLXLMCommon
-import Synchronization
 import Tokenizers
 
 /// MLX chat models, one engine per folder so every request for a model shares one load.
 final class MLXChat: Sendable {
     /// MLX's compiled Metal kernels, which the build copies next to the executable.
     private let metallib: URL?
-    private let engines = Mutex<[URL: MLXChatEngine]>([:])
+    private let engines = EnginesByFolder<MLXChatEngine>()
 
     /// Must run before anything else uses MLX, which reads the library's path once.
     init(executableDir: URL?) {
@@ -28,12 +27,7 @@ final class MLXChat: Sendable {
         guard metallib != nil else {
             throw ModelError.unavailable("MLX's Metal library (mlx.metallib) is missing next to openwispr-models. Rebuild with npm run models:build")
         }
-        return engines.withLock { engines in
-            if let engine = engines[model.folder] { return engine }
-            let engine = MLXChatEngine(model: model)
-            engines[model.folder] = engine
-            return engine
-        }
+        return engines.engine(for: model, create: MLXChatEngine.init)
     }
 
     func status(for model: DownloadedModel) throws -> DownloadedChatStatus {
@@ -54,8 +48,6 @@ actor MLXChatEngine: ChatEngine {
     /// Models advertise up to 262K tokens, but the KV cache for that wouldn't fit in memory and the
     /// prompt would take many minutes to read. 32K covers a long meeting's transcript.
     private static let maxContextTokens = 32_768
-    /// Below this many tokens left for the answer, a request is treated as too long.
-    private static let minimumAnswerTokens = 16
     /// Freed GPU buffers MLX may keep for reuse between requests.
     private static let cacheLimitBytes = 512 * 1024 * 1024
 
@@ -97,15 +89,9 @@ actor MLXChatEngine: ChatEngine {
     func complete(_ request: CompleteRequest) async throws -> CompleteResult {
         let container = try await loadContainer()
         let input = try await prepare(request.messages, container: container)
-        let used = input.text.tokens.size
-        let left = contextSize - used
-        if left < Self.minimumAnswerTokens {
-            throw ModelError.contextExceeded("Too long for \(model.name) (\(used) of \(contextSize) tokens)")
-        }
-        let maxTokens = min(request.maxTokens, left)
+        let maxTokens = try answerBudget(used: input.text.tokens.size, contextSize: contextSize, wanted: request.maxTokens, modelName: model.name)
         let (text, stopReason) = try await generate(input, maxTokens: maxTokens, container: container)
         warmedUp = true
-        // Hitting the cap cuts the answer off without an error.
         if stopReason == .length {
             throw ModelError.contextExceeded("The answer didn't fit in \(maxTokens) tokens")
         }

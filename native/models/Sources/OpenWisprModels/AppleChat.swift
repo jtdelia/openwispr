@@ -39,8 +39,6 @@ struct CompleteResult: Encodable, Sendable {
 struct AppleChat: ChatEngine {
     /// What Apple's model answers, as text rather than an error, when it declines.
     private static let textRefusal = "Unable to work with that request."
-    /// Below this many tokens left for the answer, a request is treated as too long.
-    private static let minimumAnswerTokens = 16
 
     /// Relaxed guardrails meant for transforming text the user supplied, which is all OpenWispr asks for.
     private static func model() -> SystemLanguageModel {
@@ -72,7 +70,7 @@ struct AppleChat: ChatEngine {
         try Self.ensureAvailable(model)
         let instructions = request.messages.filter { $0.role == "system" }.map(\.content).joined(separator: "\n\n")
         let prompt = Self.prompt(request.messages.filter { $0.role != "system" })
-        let maxTokens = try await Self.answerBudget(model, instructions: instructions, prompt: prompt, wanted: request.maxTokens)
+        let maxTokens = try await Self.answerTokens(model, instructions: instructions, prompt: prompt, wanted: request.maxTokens)
         // A fresh session per request: a session keeps its transcript, which would fill the context.
         let session = LanguageModelSession(model: model, instructions: instructions.isEmpty ? nil : instructions)
         let response: LanguageModelSession.Response<String>
@@ -84,7 +82,7 @@ struct AppleChat: ChatEngine {
         } catch {
             throw Self.modelError(error)
         }
-        // Hitting the cap cuts the answer off without an error.
+        // Foundation Models stops at the cap without an error, so a full answer budget means it was cut off.
         if #available(macOS 27, *), response.usage.output.totalTokenCount >= maxTokens {
             throw ModelError.contextExceeded("The answer didn't fit in \(maxTokens) tokens")
         }
@@ -94,8 +92,8 @@ struct AppleChat: ChatEngine {
         return CompleteResult(text: response.content)
     }
 
-    /// Tokens left for the answer, at most `wanted`. Fails rather than letting the model truncate.
-    private static func answerBudget(_ model: SystemLanguageModel, instructions: String, prompt: String, wanted: Int) async throws -> Int {
+    /// `answerBudget` for this request; counting tokens needs macOS 26.4.
+    private static func answerTokens(_ model: SystemLanguageModel, instructions: String, prompt: String, wanted: Int) async throws -> Int {
         guard #available(macOS 26.4, *) else { return wanted }
         let used: Int
         do {
@@ -104,11 +102,7 @@ struct AppleChat: ChatEngine {
         } catch {
             throw modelError(error)
         }
-        let left = model.contextSize - used
-        if left < minimumAnswerTokens {
-            throw ModelError.contextExceeded("Too long for Apple's chat model (\(used) of \(model.contextSize) tokens)")
-        }
-        return min(wanted, left)
+        return try answerBudget(used: used, contextSize: model.contextSize, wanted: wanted, modelName: "Apple's chat model")
     }
 
     /// Earlier turns are flattened into the prompt; Cleanup and summaries send a single user message.

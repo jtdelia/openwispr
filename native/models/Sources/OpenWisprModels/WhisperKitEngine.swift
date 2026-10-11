@@ -1,18 +1,12 @@
 import Foundation
-import Synchronization
 import WhisperKit
 
 /// Whisper models loaded through WhisperKit, one engine per folder so every request for a model shares one load.
 final class Whisper: Sendable {
-    private let engines = Mutex<[URL: WhisperKitEngine]>([:])
+    private let engines = EnginesByFolder<WhisperKitEngine>()
 
     func engine(for model: DownloadedModel) -> WhisperKitEngine {
-        engines.withLock { engines in
-            if let engine = engines[model.folder] { return engine }
-            let engine = WhisperKitEngine(model: model)
-            engines[model.folder] = engine
-            return engine
-        }
+        engines.engine(for: model, create: WhisperKitEngine.init)
     }
 }
 
