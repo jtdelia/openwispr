@@ -76,7 +76,9 @@ describe('cleanupMessages', () => {
       content: '<context>\nApp: Notes\nText before the cursor: "I\'ll send it over"\n</context>\n<transcript>\nonce i finish the draft\n</transcript>',
     })
     expect(system.content).toMatch(/continues a sentence/)
+    expect(system.content).toMatch(/Never repeat it/)
     expect(system.content).toContain('OpenWispr')
+    expect(cleanupMessages({ ...input, beforeText: '' })[0].content).not.toMatch(/Never repeat/)
   })
 
   it('quotes only the end of a long text before the cursor, and leaves out context it has none of', () => {
