@@ -76,6 +76,22 @@ export type SettingsPatch = {
 
 export type EndpointTestResult = { ok: true } | { ok: false; error: string }
 
+/** What the model process reports about Apple's models on this Mac. */
+export interface BuiltInStatus {
+  appleSpeech: {
+    available: boolean
+    /** Why Apple's speech-to-text can't be used, when it can't. */
+    reason?: string
+    /** The locale the language setting maps to, or null when Apple doesn't support that language. */
+    locale: string | null
+    /** BCP 47 locales Apple's speech-to-text supports on this Mac, read at runtime. */
+    locales: string[]
+  }
+}
+
+/** An Apple language-asset download, reported while it runs. */
+export type ModelProgress = { kind: 'appleSpeechAssets'; locale: string; fraction: number }
+
 export interface DictionaryEntry {
   id: string
   /** Spelling the transcript should use. */

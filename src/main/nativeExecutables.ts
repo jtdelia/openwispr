@@ -15,6 +15,8 @@ export interface NativeRuntime {
 
 export const HELPER: NativeExecutable = { name: 'openwispr-helper', devBuildDir: 'native/helper/.build/release' }
 
+export const MODEL_PROCESS: NativeExecutable = { name: 'openwispr-models', devBuildDir: 'native/models/.build/release' }
+
 export function nativeExecutablePath(executable: NativeExecutable, runtime: NativeRuntime): string {
   if (runtime.isPackaged) return join(runtime.resourcesPath, executable.name)
   return join(runtime.appPath, executable.devBuildDir, executable.name)

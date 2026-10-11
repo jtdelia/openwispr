@@ -14,7 +14,9 @@ import {
 import { DictationController } from './dictation'
 import { Helper } from './helper'
 import { MeetingStore } from './meetingStore'
+import { spawnTransport } from './modelProcess'
 import { Models } from './models'
+import { MODEL_PROCESS, nativeExecutablePath } from './nativeExecutables'
 import { NotetakerController } from './notetaker'
 import { ShortcutEngine } from './shortcutEngine'
 import { Store } from './store'
@@ -33,9 +35,19 @@ async function main(): Promise<void> {
 
   const store = new Store()
   const meetings = new MeetingStore()
-  const models = new Models({ fetch: globalThis.fetch, settings: () => store.settings })
+  const modelProcessPath = nativeExecutablePath(MODEL_PROCESS, {
+    isPackaged: app.isPackaged,
+    resourcesPath: process.resourcesPath,
+    appPath: app.getAppPath(),
+  })
+  const models = new Models({
+    fetch: globalThis.fetch,
+    settings: () => store.settings,
+    transport: spawnTransport(modelProcessPath, { requestSpeechAuthorization: app.isPackaged }),
+  })
   const helper = new Helper()
   const windows = new Windows()
+  models.on('progress', (progress) => windows.broadcast(Channel.modelProgress, progress))
   const engine = new ShortcutEngine(store.settings.shortcuts)
   const dictation = new DictationController(helper, store, models, windows, engine)
   const notetaker = new NotetakerController(helper, store, models, meetings, windows, (state) => updateTray(state))
@@ -100,6 +112,7 @@ async function main(): Promise<void> {
     if (!MODEL_ROLES.includes(role)) throw new Error(`Unknown model role ${String(role)}`)
     return models.testEndpoint(role)
   })
+  ipcMain.handle(Channel.getBuiltInStatus, () => models.status())
   ipcMain.handle(Channel.getHistory, () => store.getHistory())
   ipcMain.handle(Channel.deleteHistoryEntry, (_e, id: string) => {
     store.deleteHistory(id)
@@ -234,6 +247,7 @@ async function main(): Promise<void> {
     store.flush()
     meetings.flush()
     helper.stop()
+    models.stop()
     // A non-closable window would otherwise veto app.quit().
     windows.flowBar.destroy()
   })

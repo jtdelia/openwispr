@@ -1,4 +1,5 @@
 import type {
+  BuiltInStatus,
   DictionaryEntry,
   EndpointTestResult,
   FlowBarState,
@@ -6,6 +7,7 @@ import type {
   Meeting,
   MeetingDetail,
   MeetingPatch,
+  ModelProgress,
   ModelRole,
   NotetakerState,
   PermissionStatus,
@@ -56,6 +58,8 @@ export interface OpenWisprApi {
   getSettings(): Promise<PublicSettings>
   updateSettings(patch: SettingsPatch): Promise<PublicSettings>
   testEndpoint(role: ModelRole): Promise<EndpointTestResult>
+  getBuiltInStatus(): Promise<BuiltInStatus>
+  onModelProgress(listener: (progress: ModelProgress) => void): () => void
   getHistory(): Promise<HistoryEntry[]>
   deleteHistoryEntry(id: string): Promise<void>
   clearHistory(): Promise<void>
@@ -101,6 +105,8 @@ export const Channel = {
   getSettings: 'settings:get',
   updateSettings: 'settings:update',
   testEndpoint: 'models:test-endpoint',
+  getBuiltInStatus: 'models:built-in-status',
+  modelProgress: 'models:progress',
   getHistory: 'history:get',
   deleteHistoryEntry: 'history:delete',
   clearHistory: 'history:clear',

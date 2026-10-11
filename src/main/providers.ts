@@ -76,7 +76,7 @@ interface TranscriptionResponse {
   segments?: Array<{ start?: number; end?: number; text?: string; speaker?: string }>
 }
 
-function parseSegments(json: TranscriptionResponse, durationMs: number): TranscriptSegment[] {
+export function parseSegments(json: TranscriptionResponse, durationMs: number): TranscriptSegment[] {
   const clamp = (seconds: number | undefined) => Math.min(durationMs, Math.max(0, Math.round((seconds ?? 0) * 1000)))
   const segments = (json.segments ?? [])
     .map((s) => ({

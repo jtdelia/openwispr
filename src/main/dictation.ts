@@ -104,6 +104,7 @@ export class DictationController {
       this.windows.showHub().webContents.send(Channel.dataChanged, 'settings')
       return
     }
+    this.models.warmUp()
     const session = ++this.session
     this.phase = { kind: 'recording', session, mode, startedAt: Date.now(), context: this.captureContext() }
     this.windows.setFlowBarState({ kind: 'initializing', mode })
