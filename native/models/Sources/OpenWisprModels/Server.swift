@@ -1,14 +1,50 @@
 import Foundation
 
 protocol SpeechToTextEngine: Sendable {
+    /// ISO language codes it transcribes, or nil when it isn't limited to a known set.
+    var languages: [String]? { get }
     /// Gets the model ready for `language`, downloading what it needs.
     func load(language: String) async throws
     func transcribe(_ samples: [Int16], language: String, prompt: String) async throws -> [Segment]
     func unload() async
 }
 
+extension SpeechToTextEngine {
+    var languages: [String]? { nil }
+
+    /// An empty setting means the engine picks the language.
+    func supports(language: String) -> Bool {
+        guard let code = languageCode(language), let languages else { return true }
+        return languages.contains(code)
+    }
+}
+
+/// The language part of a setting like `de` or `pt-BR`, or nil when it's empty.
+func languageCode(_ language: String) -> String? {
+    let code = language.trimmingCharacters(in: .whitespaces).split(whereSeparator: { $0 == "-" || $0 == "_" }).first
+    return code.map { $0.lowercased() }
+}
+
 struct StatusResult: Encodable, Sendable {
     let appleSpeech: AppleSpeechStatus
+    let speechToText: DownloadedSpeechStatus?
+}
+
+struct DownloadedSpeechStatus: Encodable, Sendable {
+    let model: String
+    let name: String
+    let supported: Bool
+    let languages: [String]?
+
+    private enum CodingKeys: String, CodingKey { case model, name, supported, languages }
+
+    func encode(to encoder: any Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(model, forKey: .model)
+        try container.encode(name, forKey: .name)
+        try container.encode(supported, forKey: .supported)
+        try container.encode(languages, forKey: .languages)
+    }
 }
 
 /// Sends a download's progress, skipping updates of less than a percent.
@@ -31,6 +67,9 @@ actor ProgressReporter {
 struct Server: Sendable {
     let writer: Writer
     let appleSpeech: AppleSpeech
+    /// Where the app keeps downloaded models, one folder per model id.
+    let modelsDir: URL?
+    let parakeet: Parakeet
 
     func handle(_ request: Request) async {
         do {
@@ -71,15 +110,32 @@ struct Server: Sendable {
                 if let engine = try? speechToText(id) { await engine.unload() }
             }
             return Empty()
-        case let .status(language):
-            return StatusResult(appleSpeech: await appleSpeech.status(language: language))
+        case let .status(language, speechToTextModel):
+            return StatusResult(
+                appleSpeech: await appleSpeech.status(language: language),
+                speechToText: speechToTextModel.flatMap { try? downloadedStatus($0, language: language) }
+            )
         }
+    }
+
+    private func downloadedStatus(_ id: String, language: String) throws -> DownloadedSpeechStatus {
+        let model = try DownloadedModel.installed(id, in: modelsDir)
+        let engine = try speechToText(model)
+        return DownloadedSpeechStatus(model: id, name: model.name, supported: engine.supports(language: language), languages: engine.languages)
     }
 
     private func speechToText(_ model: String) throws -> any SpeechToTextEngine {
         switch model {
         case "apple": appleSpeech
-        default: throw ModelError.unavailable("Unknown speech-to-text model \(model)")
+        default: try speechToText(try DownloadedModel.installed(model, in: modelsDir))
+        }
+    }
+
+    private func speechToText(_ model: DownloadedModel) throws -> any SpeechToTextEngine {
+        guard model.task == "speechToText" else { throw ModelError.unavailable("\(model.name) isn't a speech-to-text model") }
+        switch model.engine {
+        case "fluidAudio": return ParakeetEngine(model: model, parakeet: parakeet)
+        default: throw ModelError.unavailable("\(model.name) can't be used for speech-to-text yet")
         }
     }
 }

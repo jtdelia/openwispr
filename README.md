@@ -121,7 +121,7 @@ description); unpackaged, Apple's speech-to-text runs without asking.
 | `npm test` | Unit tests for the shortcut engine and text processing |
 | `npm run helper:build` | Build the Swift helper only |
 | `npm run models:build` | Build the Swift model process only |
-| `npm run models:smoke -- [clip.wav] [--language en]` | Transcribe a 16 kHz mono WAV through Apple's model and print latency |
+| `npm run models:smoke -- [clip.wav] [--language en] [--model apple] [--models-dir dir]` | Transcribe a 16 kHz mono WAV through Apple's model or a downloaded one (like `parakeet-tdt-0.6b-v3`) and print latency |
 
 ## Not implemented (yet)
 
