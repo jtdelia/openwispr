@@ -4,6 +4,10 @@ export interface SpeechChunk {
   endSample: number
 }
 
+export const SPEECH_THRESHOLD = 0.01
+export const MIN_SPEECH_MS = 400
+const SPEECH_FRAME = 1024
+
 export interface ChunkerOptions {
   sampleRate: number
   /** RMS above which a frame counts as speech. */
@@ -47,14 +51,14 @@ export class SpeechChunker {
   private cutRequested = false
 
   constructor(options: ChunkerOptions) {
-    const ms = (value: number) => Math.round((value / 1000) * options.sampleRate)
+    const ms = (value: number) => msToSamples(value, options.sampleRate)
     this.sampleRate = options.sampleRate
-    this.speechThreshold = options.speechThreshold ?? 0.01
+    this.speechThreshold = options.speechThreshold ?? SPEECH_THRESHOLD
     this.minChunkSamples = ms(options.minChunkMs ?? 6000)
     this.maxChunkSamples = ms(options.maxChunkMs ?? 25_000)
     this.pauseSamples = ms(options.pauseMs ?? 600)
     this.prerollSamples = ms(options.prerollMs ?? 300)
-    this.minSpeechSamples = ms(options.minSpeechMs ?? 400)
+    this.minSpeechSamples = ms(options.minSpeechMs ?? MIN_SPEECH_MS)
     this.requestedCutMinSamples = ms(options.requestedCutMinMs ?? 1000)
     this.requestedCutPauseSamples = ms(options.requestedCutPauseMs ?? 250)
   }
@@ -120,7 +124,21 @@ export class SpeechChunker {
   }
 }
 
-function rms(frame: Float32Array): number {
+/** Milliseconds of `samples` whose frames are loud enough to count as speech. */
+export function speechMs(samples: Float32Array, sampleRate: number, threshold = SPEECH_THRESHOLD): number {
+  let speech = 0
+  for (let at = 0; at < samples.length; at += SPEECH_FRAME) {
+    const frame = samples.subarray(at, at + SPEECH_FRAME)
+    if (rms(frame) >= threshold) speech += frame.length
+  }
+  return (speech / sampleRate) * 1000
+}
+
+export function msToSamples(ms: number, sampleRate: number): number {
+  return Math.round((ms / 1000) * sampleRate)
+}
+
+export function rms(frame: Float32Array): number {
   let sum = 0
   for (const sample of frame) sum += sample * sample
   return frame.length ? Math.sqrt(sum / frame.length) : 0

@@ -64,7 +64,49 @@ describe('SelfName', () => {
     timeline.push({ at: 0, speaking: ['Noh Wan'] })
     timeline.push({ at: 4000, speaking: ['John'] })
     expect(timeline.dominant(3000, 5000)).toBeNull()
-    expect(timeline.dominant(3000, 5000, 'Noh Wan')).toBe('John')
+    expect(timeline.dominant(3000, 5000, ['Noh Wan'])).toBe('John')
+  })
+
+  it('rules out people the call audio clearly belonged to', () => {
+    const self = new SelfName()
+    self.heardOnCall('John')
+    expect(self.isRemote('John')).toBe(false)
+    self.heardOnCall('John')
+    expect(self.remoteNames).toEqual(['John'])
+    self.vote('John')
+    self.vote('John')
+    expect(self.current).toBeNull()
+    self.vote('Noh Wan')
+    self.vote('Noh Wan')
+    expect(self.current).toBe('Noh Wan')
+  })
+})
+
+describe('crediting overlapping speech', () => {
+  const timeline = new SpeakerTimeline()
+  timeline.push({ at: 0, speaking: ['John'] })
+  timeline.push({ at: 2000, speaking: ['John', 'Noh Wan'] })
+  timeline.push({ at: 4000, speaking: ['Noh Wan'] })
+  const hints = { ignore: [], previous: null, isRemote: () => false }
+
+  it('credits a clear speaker as clear', () => {
+    expect(timeline.credit(0, 2000, hints)).toEqual({ name: 'John', clear: true })
+  })
+
+  it('keeps the call audio with whoever already had it when someone talks over them', () => {
+    expect(timeline.credit(2000, 4000, hints)).toBeNull()
+    expect(timeline.credit(2000, 4000, { ...hints, previous: 'John' })).toEqual({ name: 'John', clear: false })
+  })
+
+  it('otherwise prefers the only confirmed remote voice', () => {
+    expect(timeline.credit(2000, 4000, { ...hints, isRemote: (name) => name === 'John' })).toEqual({
+      name: 'John',
+      clear: false,
+    })
+  })
+
+  it('does not hand a mix to a previous speaker who is no longer shown', () => {
+    expect(timeline.credit(2000, 4000, { ...hints, previous: 'Alice' })).toBeNull()
   })
 })
 
