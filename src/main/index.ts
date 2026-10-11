@@ -41,11 +41,12 @@ async function main(): Promise<void> {
     resourcesPath: process.resourcesPath,
     appPath: app.getAppPath(),
   })
+  const modelsDir = join(app.getPath('userData'), 'models')
   const models = new Models({
     fetch: globalThis.fetch,
     settings: () => store.settings,
-    transport: spawnTransport(modelProcessPath, { requestSpeechAuthorization: app.isPackaged }),
-    modelsDir: join(app.getPath('userData'), 'models'),
+    transport: spawnTransport(modelProcessPath, { requestSpeechAuthorization: app.isPackaged, modelsDir }),
+    modelsDir,
   })
   const helper = new Helper()
   const windows = new Windows()

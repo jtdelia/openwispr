@@ -87,6 +87,15 @@ export interface BuiltInStatus {
     /** BCP 47 locales Apple's speech-to-text supports on this Mac, read at runtime. */
     locales: string[]
   }
+  /** The selected downloaded speech-to-text model, when one is selected and installed. */
+  speechToText?: {
+    model: string
+    name: string
+    /** Whether it transcribes the language setting; an empty setting means it auto-detects. */
+    supported: boolean
+    /** ISO language codes, or null when it isn't limited to a known set. */
+    languages: string[] | null
+  }
 }
 
 /** An Apple language-asset download, reported while it runs. */
