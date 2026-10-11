@@ -36,7 +36,7 @@ transcription runs against any OpenAI-compatible endpoint you configure.
 ## Architecture
 
 ```
-src/main/        Electron main: shortcut gestures, dictation state machine, providers, JSON store
+src/main/        Electron main: shortcut gestures, dictation state machine, Models (the model seam), JSON store
 src/preload/     Typed context bridge (window.openwispr)
 src/renderer/    hub/   main window (Home, Notetaker, Dictionary, Snippets, Style, Settings)
                  status/ Flow bar, dictation capture, meeting capture (mic + system audio → speech chunks)
@@ -67,10 +67,10 @@ Then in **Settings**:
    behalf of that app and may show no prompt at all, leaving the microphone silent. Run
    `npm run start:standalone` instead: it starts the built app as `Electron`, which gets its own
    Microphone and Accessibility entries.
-3. **Transcription**: pick a provider and paste an API key.
+3. **Speech-to-text**: pick an Endpoint preset, paste an API key, and use *Test* to check it answers.
 4. **Notetaker** (optional): the first recording asks for *System Audio Recording* permission
    (System Settings → Privacy & Security → Screen & System Audio Recording). Without it, only your
-   microphone is recorded. Meeting summaries use the cleanup model. Requires macOS 13+, and
+   microphone is recorded. Meeting titles and summaries use the chat model. Requires macOS 13+, and
    macOS 14.4+ for audio-only capture without screen recording. Speaker names need the Accessibility
    grant; in a browser, keep the Meet tab visible (background tabs aren't readable).
 
@@ -81,7 +81,8 @@ Then in **Settings**:
 | Local ([Speaches](https://github.com/speaches-ai/speaches)) | `Systran/faster-distil-whisper-large-v3` | off |
 
 Any server that implements `POST /audio/transcriptions` and `POST /chat/completions` works. Local
-endpoints (`localhost`, `127.0.0.1`) don't need a key. API keys are encrypted with Electron
+speech-to-text endpoints (`localhost`, `127.0.0.1`) don't need a key, and a chat endpoint never
+requires one. API keys are encrypted with Electron
 `safeStorage` (macOS Keychain) and never reach the renderer.
 
 If `fn` opens the emoji picker, set System Settings → Keyboard → "Press 🌐 key to" → "Do Nothing".
