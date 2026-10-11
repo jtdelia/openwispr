@@ -21,8 +21,8 @@ enum RequestBody: Sendable {
     case complete(CompleteRequest)
     case load([ModelRef])
     case unload([String])
-    /// `speechToText` is the selected downloaded speech-to-text model, if any.
-    case status(language: String, speechToText: String?)
+    /// `speechToText` and `chat` are the selected downloaded models, if any.
+    case status(language: String, speechToText: String?, chat: String?)
 }
 
 struct RequestID: Decodable {
@@ -33,7 +33,7 @@ struct Request: Decodable, Sendable {
     let id: Int
     let body: RequestBody
 
-    private enum CodingKeys: String, CodingKey { case id, type, models, language, speechToText }
+    private enum CodingKeys: String, CodingKey { case id, type, models, language, speechToText, chat }
 
     init(from decoder: any Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
@@ -46,7 +46,8 @@ struct Request: Decodable, Sendable {
         case "status":
             body = .status(
                 language: try container.decodeIfPresent(String.self, forKey: .language) ?? "",
-                speechToText: try container.decodeIfPresent(String.self, forKey: .speechToText)
+                speechToText: try container.decodeIfPresent(String.self, forKey: .speechToText),
+                chat: try container.decodeIfPresent(String.self, forKey: .chat)
             )
         case let other: throw ModelError.modelFailed("Unknown request type \(other)")
         }

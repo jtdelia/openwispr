@@ -6,7 +6,8 @@
 // (defaults to the app's). The first load of a downloaded Core ML model (like `whisper-small`) compiles it
 // for this Mac and can take minutes. The clip must be a 16 kHz mono 16-bit WAV, e.g.
 // `say -o clip.wav --file-format=WAVE --data-format=LEI16@16000 "…"`.
-// `--cleanup` runs the Cleanup fixtures through Apple's chat model with the app's prompt and prints Markdown.
+// `--cleanup` runs the Cleanup fixtures through a chat model (--model: `apple` or a downloaded MLX model's id,
+// like `qwen3-4b-instruct-2507`) with the app's prompt and prints Markdown.
 // With OPENAI_API_KEY set it also runs them through the cloud default (OPENWISPR_CLOUD_MODEL, default
 // gpt-4.1-mini, at OPENWISPR_CLOUD_BASE_URL) for a side-by-side comparison.
 // Set OPENWISPR_MODELS to test another build, e.g. dist/mac-arm64/OpenWispr.app/Contents/Resources/openwispr-models.
@@ -139,18 +140,26 @@ const cell = (text) => text.replace(/\|/g, '\\|').replace(/\n/g, '<br>')
 
 async function smokeCleanup() {
   const fixtures = JSON.parse(readFileSync(args[0] ?? 'scripts/fixtures/cleanup.json', 'utf8'))
-  const status = await timed('Status (process start)', { type: 'status', language })
-  const { appleChat } = status
-  console.log(`  Apple chat available: ${appleChat.available}${appleChat.reason ? ` (${appleChat.reason})` : ''}; context ${appleChat.contextSize} tokens`)
-  await timed('Warm-up (load)', { type: 'load', models: [{ role: 'chat', id: 'apple', language }] })
+  const status = await timed('Status (process start)', { type: 'status', language, ...(model !== 'apple' && { chat: model }) })
+  let label = 'Apple'
+  if (model === 'apple') {
+    const { appleChat } = status
+    console.log(`  Apple chat available: ${appleChat.available}${appleChat.reason ? ` (${appleChat.reason})` : ''}; context ${appleChat.contextSize} tokens`)
+  } else if (status.chat) {
+    label = status.chat.name
+    console.log(`  ${status.chat.name}: context ${status.chat.contextSize} tokens`)
+  } else {
+    console.log(`  ${model} isn't an installed chat model in ${modelsDir}`)
+  }
+  await timed('Warm-up (load)', { type: 'load', models: [{ role: 'chat', id: model, language }] })
   const cloud = Boolean(process.env.OPENAI_API_KEY)
-  const apple = (messages, maxTokens) => request({ type: 'complete', model: 'apple', messages, maxTokens }).then((r) => r.text)
+  const local = (messages, maxTokens) => request({ type: 'complete', model, messages, maxTokens }).then((r) => r.text)
 
   console.log('')
-  console.log(cloud ? '| Fixture | Transcript | Apple | Cloud |' : '| Fixture | Transcript | Apple |')
+  console.log(cloud ? `| Fixture | Transcript | ${label} | Cloud |` : `| Fixture | Transcript | ${label} |`)
   console.log(cloud ? '|---|---|---|---|' : '|---|---|---|')
   for (const fixture of fixtures) {
-    const a = await cleanUp(apple, fixture)
+    const a = await cleanUp(local, fixture)
     const row = [fixture.name, fixture.transcript, `${a.text} _(${a.ms} ms)_`]
     if (cloud) {
       const c = await cleanUp(completeCloud, fixture)

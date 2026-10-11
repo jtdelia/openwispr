@@ -32,6 +32,8 @@ export type ModelSettings = Pick<Settings, 'speechToText' | 'chat' | 'language'>
 
 export type Availability = { available: true } | { available: false; reason: string }
 
+type BuiltInSelection = { model: string } | { unavailable: string }
+
 export interface ModelsDeps {
   fetch: Fetch
   /** Current settings with decrypted API keys. */
@@ -162,7 +164,7 @@ export class Models extends EventEmitter<{ progress: [ModelProgress] }> {
     await this.refreshInstalled()
     const installed = this.installed.get(id)
     if (installed?.task === 'speechToText' && isRunnable(installed)) {
-      this.prepare(id).catch((error: unknown) => console.warn('[models] preparing a downloaded model failed', error))
+      this.prepare('speechToText', id).catch((error: unknown) => console.warn('[models] preparing a downloaded model failed', error))
     }
   }
 
@@ -195,11 +197,8 @@ export class Models extends EventEmitter<{ progress: [ModelProgress] }> {
   availability(role: ModelRole): Availability {
     const config = this.resolve(role)
     if (config === null) {
-      if (role === 'chat') {
-        return this.builtInChatModel() !== null ? { available: true } : { available: false, reason: BUILT_IN_UNAVAILABLE }
-      }
-      const speech = this.builtInSpeech()
-      return speech === null || 'model' in speech ? { available: true } : { available: false, reason: speech.unavailable }
+      const builtIn = this.builtIn(role)
+      return builtIn === null || 'model' in builtIn ? { available: true } : { available: false, reason: builtIn.unavailable }
     }
     switch (role) {
       case 'speechToText':
@@ -235,12 +234,15 @@ export class Models extends EventEmitter<{ progress: [ModelProgress] }> {
     const speech = this.builtInSpeech()
     const speechModel = speech !== null && 'model' in speech ? speech.model : null
     if (speechModel !== null && speechModel !== APPLE) {
-      this.prepare(speechModel).catch((error: unknown) => console.warn('[models] warm-up failed', error))
+      this.prepare('speechToText', speechModel).catch((error: unknown) => console.warn('[models] warm-up failed', error))
     }
     const chat = this.builtInChatModel()
+    if (chat !== null && chat !== APPLE) {
+      this.prepare('chat', chat).catch((error: unknown) => console.warn('[models] warm-up failed', error))
+    }
     const refs: ModelRef[] = [
       ...(speechModel === APPLE ? [{ role: 'speechToText' as const, id: APPLE, language }] : []),
-      ...(chat === null ? [] : [{ role: 'chat' as const, id: chat, language }]),
+      ...(chat === APPLE ? [{ role: 'chat' as const, id: APPLE, language }] : []),
     ]
     if (refs.length === 0) return
     this.process
@@ -267,13 +269,21 @@ export class Models extends EventEmitter<{ progress: [ModelProgress] }> {
     const { language } = this.deps.settings()
     const speech = this.builtInSpeech()
     const model = speech !== null && 'model' in speech && speech.model !== APPLE ? speech.model : null
-    return this.process.request({ type: 'status', language, ...(model !== null && { speechToText: model }) })
+    const chat = this.builtInChatModel()
+    return this.process.request({
+      type: 'status',
+      language,
+      ...(model !== null && { speechToText: model }),
+      ...(chat !== null && chat !== APPLE && { chat }),
+    })
   }
 
   /** How many tokens a chat request and its answer may use together, or null when unknown, as for Endpoints. */
   async chatContextSize(): Promise<number | null> {
-    if (this.builtInChatModel() === null) return null
-    return (await this.status()).appleChat.contextSize
+    const chat = this.builtInChatModel()
+    if (chat === null) return null
+    const status = await this.status()
+    return chat === APPLE ? status.appleChat.contextSize : (status.chat?.contextSize ?? null)
   }
 
   /** Stops the model process; the next Built-in request starts it again. */
@@ -286,9 +296,10 @@ export class Models extends EventEmitter<{ progress: [ModelProgress] }> {
     messages: ChatMessage[],
     { maxTokens = DEFAULT_MAX_TOKENS, ...options }: { label?: string; timeoutMs?: number; maxTokens?: number } = {},
   ): Promise<string> {
-    const model = this.builtInChatModel()
-    if (model === null) return complete(this.deps.fetch, this.endpoint('chat'), messages, options)
-    return (await this.process.request({ type: 'complete', model, messages, maxTokens })).text.trim()
+    const chat = this.builtIn('chat')
+    if (chat === null) return complete(this.deps.fetch, this.endpoint('chat'), messages, options)
+    if ('unavailable' in chat) throw new ModelError('unavailable', chat.unavailable)
+    return (await this.process.request({ type: 'complete', model: chat.model, messages, maxTokens })).text.trim()
   }
 
   /**
@@ -360,33 +371,38 @@ export class Models extends EventEmitter<{ progress: [ModelProgress] }> {
     return speech.model
   }
 
-  /** The selected Built-in speech-to-text model, or why it can't be used; null when an Endpoint is selected. */
-  private builtInSpeech(): { model: string } | { unavailable: string } | null {
-    const selection = this.deps.settings().speechToText
+  private builtInSpeech(): BuiltInSelection | null {
+    return this.builtIn('speechToText')
+  }
+
+  /** The selected Built-in model for `role`, or why it can't be used; null when an Endpoint is selected. */
+  private builtIn(role: ModelRole): BuiltInSelection | null {
+    const selection = this.deps.settings()[role]
     if (selection.kind !== 'builtIn') return null
     const id = selection.modelId
     if (id === APPLE) return { model: APPLE }
     const manifest = this.installed.get(id)
+    const roleName = ROLE_NAMES[role]
     if (!manifest) {
       const name = RECOMMENDED_MODELS.find((m) => m.id === id)?.name ?? id
-      return { unavailable: `${name} isn't downloaded. Download it or choose another speech-to-text model in Settings` }
+      return { unavailable: `${name} isn't downloaded. Download it or choose another ${roleName} model in Settings` }
     }
-    if (manifest.task !== 'speechToText') return { unavailable: `${manifest.name} isn't a speech-to-text model` }
+    if (manifest.task !== role) return { unavailable: `${manifest.name} isn't a ${roleName} model` }
     if (!isRunnable(manifest)) {
-      return { unavailable: `${manifest.name} needs an engine OpenWispr doesn't have yet. Choose another speech-to-text model in Settings` }
+      return { unavailable: `${manifest.name} needs an engine OpenWispr doesn't have yet. Choose another ${roleName} model in Settings` }
     }
     return { model: id }
   }
 
   /** Loads a downloaded model in the model process, reporting it as preparing while a slow first load runs. */
-  private prepare(id: string): Promise<void> {
+  private prepare(role: ModelRole, id: string): Promise<void> {
     const running = this.loads.get(id)
     if (running) return running
     const name = this.installed.get(id)?.name ?? id
     const { language } = this.deps.settings()
     const timer = setTimeout(() => this.setPreparing(id, name, true), PREPARING_AFTER_MS)
     const load = this.process
-      .request({ type: 'load', models: [{ role: 'speechToText', id, language }] })
+      .request({ type: 'load', models: [{ role, id, language }] })
       .then(() => undefined)
       .finally(() => {
         clearTimeout(timer)
@@ -413,10 +429,10 @@ export class Models extends EventEmitter<{ progress: [ModelProgress] }> {
     this.installed = new Map(manifests.filter((m) => m.installed).map((m) => [m.id, m]))
   }
 
-  /** Like `builtInSpeechModel`, for chat. */
+  /** The selected Built-in chat model when it can be used. */
   private builtInChatModel(): string | null {
-    const selection = this.deps.settings().chat
-    return selection.kind === 'builtIn' && selection.modelId === APPLE ? APPLE : null
+    const chat = this.builtIn('chat')
+    return chat !== null && 'model' in chat ? chat.model : null
   }
 
   /** The Endpoint serving `role`, or null when a Built-in model is selected. */

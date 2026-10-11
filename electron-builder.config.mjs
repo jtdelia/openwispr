@@ -11,6 +11,8 @@ export default {
   extraResources: [
     { from: 'native/helper/.build/release/openwispr-helper', to: 'openwispr-helper' },
     { from: 'native/models/.build/release/openwispr-models', to: 'openwispr-models' },
+    // MLX's Metal kernels; MLX looks for them next to the executable.
+    { from: 'native/models/.build/release/mlx.metallib', to: 'mlx.metallib' },
   ],
   mac: {
     target: 'dir',

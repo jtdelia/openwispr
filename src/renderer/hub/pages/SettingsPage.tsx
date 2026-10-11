@@ -133,11 +133,11 @@ export function SettingsPage() {
   )
 }
 
-/** Installed speech-to-text models the model process can run, plus the selected one even if it isn't installed. */
-function speechModelOptions(library: ModelLibrary | null, selection: PublicModelSelection): ModelStatus[] {
+/** Installed models for `role` the model process can run, plus the selected one even if it isn't installed. */
+function modelOptions(library: ModelLibrary | null, role: ModelRole, selection: PublicModelSelection): ModelStatus[] {
   return (library?.models ?? []).filter(
     ({ model, state }) =>
-      model.task === 'speechToText' &&
+      model.task === role &&
       ((state.kind === 'installed' && isRunnable(model)) || (selection.kind === 'builtIn' && selection.modelId === model.id)),
   )
 }
@@ -147,31 +147,17 @@ function ProviderSection({ settings, library }: { settings: PublicSettings; libr
   const isAppleSpeech = speechToText.kind === 'builtIn' && speechToText.modelId === 'apple'
   const isAppleChat = chat.kind === 'builtIn' && chat.modelId === 'apple'
   const applySpeechPreset = (label: string) => {
-    if (label === APPLE_OPTION) {
-      update({ speechToText: { kind: 'builtIn', modelId: 'apple' } })
-      return
-    }
-    if (label.startsWith(MODEL_OPTION_PREFIX)) {
-      update({ speechToText: { kind: 'builtIn', modelId: label.slice(MODEL_OPTION_PREFIX.length) } })
-      return
-    }
+    if (selectBuiltIn('speechToText', label)) return
     const preset = PRESETS.find((p) => p.label === label)
     if (preset) update({ speechToText: { kind: 'endpoint', baseUrl: preset.baseUrl, model: preset.transcriptionModel } })
   }
   const applyChatPreset = (label: string) => {
-    if (label === APPLE_OPTION) {
-      update({ chat: { kind: 'builtIn', modelId: 'apple' } })
-      return
-    }
+    if (selectBuiltIn('chat', label)) return
     const preset = CHAT_PRESETS.find((p) => p.label === label)
     if (preset) update({ chat: { kind: 'endpoint', baseUrl: preset.baseUrl, model: preset.cleanupModel } })
   }
-  const activeSpeechPreset = isAppleSpeech
-    ? APPLE_OPTION
-    : speechToText.kind === 'builtIn'
-      ? `${MODEL_OPTION_PREFIX}${speechToText.modelId}`
-      : presetLabel(PRESETS, speechToText)
-  const activeChatPreset = isAppleChat ? APPLE_OPTION : presetLabel(CHAT_PRESETS, chat)
+  const activeSpeechPreset = activePreset(PRESETS, speechToText)
+  const activeChatPreset = activePreset(CHAT_PRESETS, chat)
 
   return (
     <>
@@ -183,7 +169,7 @@ function ProviderSection({ settings, library }: { settings: PublicSettings; libr
         <SettingRow title="Provider">
           <ProviderSelect
             value={activeSpeechPreset}
-            models={speechModelOptions(library, speechToText)}
+            models={modelOptions(library, 'speechToText', speechToText)}
             presets={PRESETS}
             onChange={applySpeechPreset}
           />
@@ -215,7 +201,12 @@ function ProviderSection({ settings, library }: { settings: PublicSettings; libr
           onChange={(enabled) => update({ cleanup: { enabled } })}
         />
         <SettingRow title="Provider">
-          <ProviderSelect value={activeChatPreset} presets={CHAT_PRESETS} onChange={applyChatPreset} />
+          <ProviderSelect
+            value={activeChatPreset}
+            models={modelOptions(library, 'chat', chat)}
+            presets={CHAT_PRESETS}
+            onChange={applyChatPreset}
+          />
         </SettingRow>
         <SelectionSettings
           role="chat"
@@ -228,13 +219,30 @@ function ProviderSection({ settings, library }: { settings: PublicSettings; libr
           }
         />
         {isAppleChat && <AppleChatStatus />}
+        {chat.kind === 'builtIn' && !isAppleChat && <DownloadedChatStatus modelId={chat.modelId} />}
       </section>
     </>
   )
 }
 
-function presetLabel(presets: Preset[], selection: PublicModelSelection): string {
-  return (selection.kind === 'endpoint' && presets.find((p) => p.baseUrl === selection.baseUrl)?.label) || 'Custom'
+/** Selects Apple or a downloaded model when `label` is one of their options. */
+function selectBuiltIn(role: ModelRole, label: string): boolean {
+  if (label === APPLE_OPTION) {
+    update({ [role]: { kind: 'builtIn', modelId: 'apple' } })
+    return true
+  }
+  if (label.startsWith(MODEL_OPTION_PREFIX)) {
+    update({ [role]: { kind: 'builtIn', modelId: label.slice(MODEL_OPTION_PREFIX.length) } })
+    return true
+  }
+  return false
+}
+
+function activePreset(presets: Preset[], selection: PublicModelSelection): string {
+  if (selection.kind === 'builtIn') {
+    return selection.modelId === 'apple' ? APPLE_OPTION : `${MODEL_OPTION_PREFIX}${selection.modelId}`
+  }
+  return presets.find((p) => p.baseUrl === selection.baseUrl)?.label ?? 'Custom'
 }
 
 function ProviderSelect(props: {
@@ -282,17 +290,10 @@ function SelectionSettings(props: {
           </SettingRow>
         )
       }
-      if (role === 'speechToText') {
+      {
         const status = props.library?.models.find((s) => s.model.id === selection.modelId)
-        return status ? <DownloadedSpeechModel status={status} /> : null
+        return status ? <DownloadedModel role={role} status={status} /> : null
       }
-      return (
-        <SettingRow title="Model" description="This Built-in model isn’t available yet.">
-          <button className="button" onClick={() => update({ [role]: { kind: 'endpoint' } })}>
-            Use an Endpoint
-          </button>
-        </SettingRow>
-      )
     case 'endpoint':
       return (
         <>
@@ -318,11 +319,24 @@ function SelectionSettings(props: {
   }
 }
 
-const selectApple = () => update({ speechToText: { kind: 'builtIn', modelId: 'apple' } })
+const DOWNLOADED_MODEL_TEXT: Record<ModelRole, { private: string; preparing: string; usedBy: string }> = {
+  speechToText: {
+    private: 'Your audio never leaves this Mac.',
+    preparing: 'The first load compiles it and can take a couple of minutes.',
+    usedBy: 'Dictation uses it',
+  },
+  chat: {
+    private: 'Your text never leaves this Mac.',
+    preparing: 'Loading it into memory takes a few seconds.',
+    usedBy: 'Cleanup and meeting summaries use it',
+  },
+}
 
-/** The selected downloaded speech-to-text model: ready, preparing, or still to be downloaded. */
-function DownloadedSpeechModel({ status }: { status: ModelStatus }) {
+/** The selected downloaded model: ready, preparing, or still to be downloaded. */
+function DownloadedModel({ role, status }: { role: ModelRole; status: ModelStatus }) {
   const { model, state } = status
+  const text = DOWNLOADED_MODEL_TEXT[role]
+  const selectApple = () => update({ [role]: { kind: 'builtIn', modelId: 'apple' } })
   switch (state.kind) {
     case 'installed':
       if (!isRunnable(model)) {
@@ -339,8 +353,8 @@ function DownloadedSpeechModel({ status }: { status: ModelStatus }) {
           title="Model"
           description={
             status.preparing
-              ? `Preparing ${model.name} for this Mac… The first load compiles it and can take a couple of minutes.`
-              : `${model.name} runs on this Mac. Your audio never leaves this Mac.`
+              ? `Preparing ${model.name} for this Mac… ${text.preparing}`
+              : `${model.name} runs on this Mac. ${text.private}`
           }
         >
           <span className="badge ok">Built-in</span>
@@ -350,7 +364,7 @@ function DownloadedSpeechModel({ status }: { status: ModelStatus }) {
       return (
         <SettingRow
           title="Model"
-          description={`Downloading ${model.name}… ${Math.floor((state.bytesDone / Math.max(1, state.totalBytes)) * 100)}%. Dictation uses it once it’s installed.`}
+          description={`Downloading ${model.name}… ${Math.floor((state.bytesDone / Math.max(1, state.totalBytes)) * 100)}%. ${text.usedBy} once it’s installed.`}
         >
           <button className="link" onClick={selectApple}>
             Use Apple instead
@@ -515,9 +529,28 @@ function AppleChatStatus() {
         </>
       )}
       {status.fix === 'wait' && 'It’s usable once the download finishes. '}
-      Downloadable chat models are coming.
+      You can also download a chat model under Built-in models.
     </p>
   )
+}
+
+/** How much the selected downloaded chat model reads per request. */
+function DownloadedChatStatus({ modelId }: { modelId: string }) {
+  const [status, setStatus] = useState<BuiltInStatus['chat'] | null>(null)
+
+  useEffect(() => {
+    let current = true
+    void api.getBuiltInStatus().then(
+      (next) => current && setStatus(next.chat ?? null),
+      () => current && setStatus(null),
+    )
+    return () => {
+      current = false
+    }
+  }, [modelId])
+
+  if (!status) return null
+  return <p className="muted small">Reads up to {status.contextSize} tokens per request.</p>
 }
 
 /** Whether the selected downloaded speech-to-text model supports the language setting. */

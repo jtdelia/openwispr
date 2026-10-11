@@ -9,6 +9,13 @@ protocol SpeechToTextEngine: Sendable {
     func unload() async
 }
 
+protocol ChatEngine: Sendable {
+    /// Gets the model ready so the next request answers quickly.
+    func load() async throws
+    func complete(_ request: CompleteRequest) async throws -> CompleteResult
+    func unload() async
+}
+
 extension SpeechToTextEngine {
     var languages: [String]? { nil }
 
@@ -29,6 +36,7 @@ struct StatusResult: Encodable, Sendable {
     let appleSpeech: AppleSpeechStatus
     let appleChat: AppleChatStatus
     let speechToText: DownloadedSpeechStatus?
+    let chat: DownloadedChatStatus?
 }
 
 struct DownloadedSpeechStatus: Encodable, Sendable {
@@ -73,6 +81,7 @@ struct Server: Sendable {
     let modelsDir: URL?
     let parakeet: Parakeet
     let whisper: Whisper
+    let mlxChat: MLXChat
 
     func handle(_ request: Request) async {
         do {
@@ -106,7 +115,7 @@ struct Server: Sendable {
             for model in models {
                 switch model.role {
                 case "speechToText": try await speechToText(model.id).load(language: model.language ?? "")
-                case "chat": try chat(model.id).load()
+                case "chat": try await chat(model.id).load()
                 default: throw ModelError.unavailable("Built-in \(model.role) models are not available yet")
                 }
             }
@@ -114,22 +123,38 @@ struct Server: Sendable {
         case let .unload(ids):
             for id in ids {
                 if let engine = try? speechToText(id) { await engine.unload() }
+                if let engine = try? chat(id) { await engine.unload() }
             }
             return Empty()
-        case let .status(language, speechToTextModel):
+        case let .status(language, speechToTextModel, chatModel):
             return StatusResult(
                 appleSpeech: await appleSpeech.status(language: language),
                 appleChat: appleChat.status(),
-                speechToText: speechToTextModel.flatMap { try? downloadedStatus($0, language: language) }
+                speechToText: speechToTextModel.flatMap { try? downloadedStatus($0, language: language) },
+                chat: chatModel.flatMap { try? downloadedChatStatus($0) }
             )
         }
     }
 
-    private func chat(_ model: String) throws -> AppleChat {
+    private func chat(_ model: String) throws -> any ChatEngine {
         switch model {
         case "apple": appleChat
-        default: throw ModelError.unavailable("Unknown chat model \(model)")
+        default: try chat(try DownloadedModel.installed(model, in: modelsDir))
         }
+    }
+
+    private func chat(_ model: DownloadedModel) throws -> any ChatEngine {
+        guard model.task == "chat" else { throw ModelError.unavailable("\(model.name) isn't a chat model") }
+        switch model.engine {
+        case "mlx": return try mlxChat.engine(for: model)
+        default: throw ModelError.unavailable("\(model.name) can't be used for chat yet")
+        }
+    }
+
+    private func downloadedChatStatus(_ id: String) throws -> DownloadedChatStatus {
+        let model = try DownloadedModel.installed(id, in: modelsDir)
+        guard model.task == "chat", model.engine == "mlx" else { throw ModelError.unavailable("\(model.name) can't be used for chat yet") }
+        return try mlxChat.status(for: model)
     }
 
     private func downloadedStatus(_ id: String, language: String) throws -> DownloadedSpeechStatus {
