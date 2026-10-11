@@ -15,8 +15,17 @@ import type {
   Stats,
   TranscriptSource,
 } from './types'
+import type { ModelLibrary } from './modelLibrary'
 
-export type DataTopic = 'settings' | 'history' | 'dictionary' | 'snippets' | 'permissions' | 'meetings' | 'notetaker'
+export type DataTopic =
+  | 'settings'
+  | 'history'
+  | 'dictionary'
+  | 'snippets'
+  | 'permissions'
+  | 'meetings'
+  | 'notetaker'
+  | 'models'
 
 export type RecorderCommand =
   | { type: 'start'; deviceId: string }
@@ -56,6 +65,12 @@ export interface OpenWisprApi {
   getSettings(): Promise<PublicSettings>
   updateSettings(patch: SettingsPatch): Promise<PublicSettings>
   testEndpoint(role: ModelRole): Promise<EndpointTestResult>
+  getModelLibrary(): Promise<ModelLibrary>
+  /** Starts or resumes a download in the background; progress arrives as `models` data changes. */
+  downloadModel(id: string): Promise<void>
+  cancelDownload(id: string): Promise<void>
+  /** Resolves to the bytes freed. */
+  removeModel(id: string): Promise<number>
   getHistory(): Promise<HistoryEntry[]>
   deleteHistoryEntry(id: string): Promise<void>
   clearHistory(): Promise<void>
@@ -101,6 +116,10 @@ export const Channel = {
   getSettings: 'settings:get',
   updateSettings: 'settings:update',
   testEndpoint: 'models:test-endpoint',
+  getModelLibrary: 'models:library',
+  downloadModel: 'models:download',
+  cancelDownload: 'models:cancel-download',
+  removeModel: 'models:remove',
   getHistory: 'history:get',
   deleteHistoryEntry: 'history:delete',
   clearHistory: 'history:clear',

@@ -12,6 +12,7 @@ import {
   type ShortcutAction,
 } from '../../../shared/types'
 import { useData } from '../useData'
+import { ModelsSection } from './ModelsSection'
 
 const api = window.openwispr
 
@@ -75,6 +76,8 @@ export function SettingsPage() {
       </section>
 
       <ProviderSection settings={settings} />
+
+      <ModelsSection />
 
       <section className="card settings-section">
         <h2>Shortcuts</h2>

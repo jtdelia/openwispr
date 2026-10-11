@@ -105,6 +105,14 @@ async function main(): Promise<void> {
     if (!MODEL_ROLES.includes(role)) throw new Error(`Unknown model role ${String(role)}`)
     return models.testEndpoint(role)
   })
+  models.onLibraryChanged(() => windows.broadcast(Channel.dataChanged, 'models'))
+  ipcMain.handle(Channel.getModelLibrary, () => models.library())
+  ipcMain.handle(Channel.downloadModel, (_e, id: string) => {
+    // A failure is shown from the library state, which keeps the error.
+    void models.download(id).catch(() => undefined)
+  })
+  ipcMain.handle(Channel.cancelDownload, (_e, id: string) => models.cancelDownload(id))
+  ipcMain.handle(Channel.removeModel, (_e, id: string) => models.removeModel(id))
   ipcMain.handle(Channel.getHistory, () => store.getHistory())
   ipcMain.handle(Channel.deleteHistoryEntry, (_e, id: string) => {
     store.deleteHistory(id)
