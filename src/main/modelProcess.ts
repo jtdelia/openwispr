@@ -12,7 +12,8 @@ export type ModelRequestBody =
   | { type: 'complete'; model: string; messages: ChatMessage[]; maxTokens: number }
   | { type: 'load'; models: ModelRef[] }
   | { type: 'unload'; models: string[] }
-  | { type: 'status'; language: string }
+  /** `speechToText` is the selected downloaded speech-to-text model, if any. */
+  | { type: 'status'; language: string; speechToText?: string }
 
 export type ModelRequest = ModelRequestBody & { id: number }
 
@@ -57,10 +58,13 @@ export interface ModelProcessTransport {
 /**
  * Runs the model process executable at `path`, speaking newline-delimited JSON over its stdio.
  * `requestSpeechAuthorization` must only be set when the app's Info.plist has a Speech Recognition
- * usage description; macOS kills the process if it asks without one.
+ * usage description; macOS kills the process if it asks without one. `modelsDir` holds downloaded models.
  */
-export function spawnTransport(path: string, { requestSpeechAuthorization }: { requestSpeechAuthorization: boolean }): ModelProcessTransport {
-  const args = requestSpeechAuthorization ? ['--request-speech-authorization'] : []
+export function spawnTransport(
+  path: string,
+  { requestSpeechAuthorization, modelsDir }: { requestSpeechAuthorization: boolean; modelsDir: string },
+): ModelProcessTransport {
+  const args = ['--models-dir', modelsDir, ...(requestSpeechAuthorization ? ['--request-speech-authorization'] : [])]
   return {
     start(handlers) {
       const child = spawn(path, args, { stdio: ['pipe', 'pipe', 'pipe'] })

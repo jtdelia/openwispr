@@ -240,6 +240,65 @@ describe('Models with Built-in speech-to-text', () => {
   })
 })
 
+const PARAKEET = { ...ENDPOINTS, speechToText: { kind: 'builtIn', modelId: 'parakeet-tdt-0.6b-v3' }, language: 'de' } satisfies ModelSettings
+
+describe('Models with a downloaded Parakeet model', () => {
+  it('sends dictations to the Parakeet model in the model process', async () => {
+    const process = fakeModelProcess(() => ({ result: { text: ' Guten Morgen. ' } }))
+    const { models: m, sent } = models(PARAKEET, undefined, process.transport)
+    expect(m.availability('speechToText')).toEqual({ available: true })
+    m.warmUp()
+    expect(await m.transcribe(WAV, { prompt: 'Jane' })).toBe('Guten Morgen.')
+    expect(sent).toHaveLength(0)
+    expect(process.requests()).toEqual([
+      { id: expect.any(Number), type: 'load', models: [{ role: 'speechToText', id: 'parakeet-tdt-0.6b-v3', language: 'de' }] },
+      {
+        id: expect.any(Number),
+        type: 'transcribe',
+        model: 'parakeet-tdt-0.6b-v3',
+        audio: WAV.toString('base64'),
+        language: 'de',
+        prompt: 'Jane',
+        segments: false,
+      },
+    ])
+  })
+
+  it('returns timed segments for meetings', async () => {
+    const process = fakeModelProcess(() => ({
+      result: { text: 'Hallo. Wie geht es?', segments: [{ start: 0.2, end: 1.1, text: 'Hallo.' }, { start: 1.6, end: 2.8, text: 'Wie geht es?' }] },
+    }))
+    const { models: m } = models(PARAKEET, undefined, process.transport)
+    expect(await m.transcribeSegments(WAV, { durationMs: 5000, prompt: '' })).toEqual([
+      { startMs: 200, endMs: 1100, text: 'Hallo.', speaker: null },
+      { startMs: 1600, endMs: 2800, text: 'Wie geht es?', speaker: null },
+    ])
+    expect(process.requests()[0]).toMatchObject({ type: 'transcribe', model: 'parakeet-tdt-0.6b-v3', segments: true })
+  })
+
+  it('asks the model process which languages the selected Parakeet model supports', async () => {
+    const status = {
+      appleSpeech: { available: true, locale: 'ja-JP', locales: ['ja-JP'] },
+      speechToText: { model: 'parakeet-tdt-0.6b-v3', name: 'Parakeet TDT v3', supported: false, languages: ['de', 'en'] },
+    }
+    const process = fakeModelProcess(() => ({ result: status }))
+    const { models: m } = models({ ...PARAKEET, language: 'ja' }, undefined, process.transport)
+    expect(await m.status()).toEqual(status)
+    expect(process.requests()).toEqual([{ id: expect.any(Number), type: 'status', language: 'ja', speechToText: 'parakeet-tdt-0.6b-v3' }])
+  })
+
+  it('explains when Parakeet does not support the dictation language', async () => {
+    const process = fakeModelProcess(() => ({
+      error: { code: 'unsupportedLanguage', message: "Parakeet TDT v3 doesn't support Japanese" },
+    }))
+    const { models: m } = models({ ...PARAKEET, language: 'ja' }, undefined, process.transport)
+    await expect(m.transcribe(WAV, { prompt: '' })).rejects.toMatchObject({
+      code: 'unsupportedLanguage',
+      message: "Parakeet TDT v3 doesn't support Japanese. Choose another language in Settings",
+    })
+  })
+})
+
 const APPLE_CHAT = { ...ENDPOINTS, chat: { kind: 'builtIn', modelId: 'apple' } } satisfies ModelSettings
 
 describe('Models with Built-in chat', () => {

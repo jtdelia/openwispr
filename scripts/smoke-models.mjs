@@ -1,8 +1,9 @@
 #!/usr/bin/env node
-// Manual smoke test of the model process's Apple models, printing latency.
-// Usage: npm run models:smoke -- [clip.wav] [--language en]
+// Manual smoke test of the model process, printing latency.
+// Usage: npm run models:smoke -- [clip.wav] [--language en] [--model apple] [--models-dir dir]
 //        npm run models:smoke -- --cleanup [fixtures.json]
-// The first transcribes a clip with Apple's speech-to-text. The clip must be a 16 kHz mono 16-bit WAV, e.g.
+// The first transcribes a clip. --model is `apple` or a downloaded model's id, looked up in --models-dir
+// (defaults to the app's). The clip must be a 16 kHz mono 16-bit WAV, e.g.
 // `say -o clip.wav --file-format=WAVE --data-format=LEI16@16000 "…"`.
 // `--cleanup` runs the Cleanup fixtures through Apple's chat model with the app's prompt and prints Markdown.
 // With OPENAI_API_KEY set it also runs them through the cloud default (OPENWISPR_CLOUD_MODEL, default
@@ -10,20 +11,28 @@
 // Set OPENWISPR_MODELS to test another build, e.g. dist/mac-arm64/OpenWispr.app/Contents/Resources/openwispr-models.
 import { spawn } from 'node:child_process'
 import { readFileSync } from 'node:fs'
+import { homedir } from 'node:os'
+import { join } from 'node:path'
 import { createInterface } from 'node:readline'
 import { cleanupMaxTokens, cleanupMessages, sanitizeCleanup } from '../src/main/textProcessing.ts'
 
 const args = process.argv.slice(2)
-const take = (name, count) => {
+function option(name, fallback) {
   const index = args.indexOf(name)
-  return index >= 0 ? args.splice(index, count) : null
+  return index >= 0 ? args.splice(index, 2)[1] : fallback
 }
-const language = take('--language', 2)?.[1] ?? 'en'
-const cleanup = take('--cleanup', 1) !== null
+function flag(name) {
+  const index = args.indexOf(name)
+  return index >= 0 && args.splice(index, 1).length > 0
+}
+const language = option('--language', 'en')
+const model = option('--model', 'apple')
+const modelsDir = option('--models-dir', join(homedir(), 'Library/Application Support/OpenWispr/models'))
+const cleanup = flag('--cleanup')
 const executable = process.env.OPENWISPR_MODELS ?? 'native/models/.build/release/openwispr-models'
 const REQUEST_TIMEOUT_MS = 120_000
 
-const child = spawn(executable, [], { stdio: ['pipe', 'pipe', 'inherit'] })
+const child = spawn(executable, ['--models-dir', modelsDir], { stdio: ['pipe', 'pipe', 'inherit'] })
 child.on('error', (error) => {
   console.error(`Couldn't start ${executable} (${error.message}). Run "npm run models:build" first.`)
   process.exit(1)
@@ -72,12 +81,19 @@ async function smokeSpeech() {
   const clip = args[0] ?? 'scripts/fixtures/dictation-en.wav'
   const audio = readFileSync(clip)
   const audioSeconds = (audio.byteLength - 44) / 32_000
-  const transcribe = { type: 'transcribe', model: 'apple', audio: audio.toString('base64'), language, prompt: '', segments: true }
-  console.log(`Clip: ${clip} (${audioSeconds.toFixed(1)} s), language "${language}"`)
-  const status = await timed('Status (process start)', { type: 'status', language })
-  console.log(`  available: ${status.appleSpeech.available}${status.appleSpeech.reason ? ` (${status.appleSpeech.reason})` : ''}`)
-  console.log(`  locale: ${status.appleSpeech.locale ?? 'unsupported'}; ${status.appleSpeech.locales.length} supported locales`)
-  await timed('Warm-up (load)', { type: 'load', models: [{ role: 'speechToText', id: 'apple', language }] })
+  const transcribe = { type: 'transcribe', model, audio: audio.toString('base64'), language, prompt: '', segments: true }
+  console.log(`Clip: ${clip} (${audioSeconds.toFixed(1)} s), model "${model}", language "${language}"`)
+  const status = await timed('Status (process start)', { type: 'status', language, ...(model !== 'apple' && { speechToText: model }) })
+  if (model === 'apple') {
+    console.log(`  available: ${status.appleSpeech.available}${status.appleSpeech.reason ? ` (${status.appleSpeech.reason})` : ''}`)
+    console.log(`  locale: ${status.appleSpeech.locale ?? 'unsupported'}; ${status.appleSpeech.locales.length} supported locales`)
+  } else if (status.speechToText) {
+    const { name, supported, languages } = status.speechToText
+    console.log(`  ${name}: ${supported ? 'supports' : "doesn't support"} "${language}"; languages: ${languages?.join(' ') ?? 'any'}`)
+  } else {
+    console.log(`  ${model} isn't installed in ${modelsDir}`)
+  }
+  await timed('Warm-up (load)', { type: 'load', models: [{ role: 'speechToText', id: model, language }] })
   const first = await timed('First transcription', transcribe)
   const warm = await timed('Warm transcription', transcribe)
   console.log(`Text: ${first.text.trim()}`)

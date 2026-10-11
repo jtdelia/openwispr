@@ -9,7 +9,7 @@ import {
   type ModelRole,
   type Settings,
 } from '../shared/types'
-import type { ModelEntry, ModelLibrary, ModelStatus } from '../shared/modelLibrary'
+import type { ModelEngine, ModelEntry, ModelLibrary, ModelStatus } from '../shared/modelLibrary'
 import { ModelDownloads } from './modelDownloads'
 import { ModelError, ModelProcess, type ModelProcessTransport, type ModelRef, type TranscribeResult } from './modelProcess'
 import { RECOMMENDED_MODELS } from './recommendedModels'
@@ -46,6 +46,8 @@ export interface ModelsDeps {
 }
 
 const APPLE = 'apple'
+/** Engines of downloaded speech-to-text models that the model process can run. */
+const PROCESS_SPEECH_ENGINES = new Set<ModelEngine>(['fluidAudio'])
 const BUILT_IN_UNAVAILABLE = 'Built-in models are not available yet'
 const TEST_TIMEOUT_MS = 20_000
 const DEFAULT_MAX_TOKENS = 1024
@@ -221,9 +223,14 @@ export class Models extends EventEmitter<{ progress: [ModelProgress] }> {
     return transcribeSegments(this.deps.fetch, { ...this.endpoint('speechToText'), language }, wav, durationMs, prompt, known)
   }
 
-  /** Apple's models on this Mac, and whether they support the language setting. Starts the model process. */
+  /**
+   * Apple's models on this Mac and, for a selected downloaded speech-to-text model, its languages; each
+   * says whether it supports the language setting. Starts the model process.
+   */
   async status(): Promise<BuiltInStatus> {
-    return this.process.request({ type: 'status', language: this.deps.settings().language })
+    const { language } = this.deps.settings()
+    const model = this.builtInSpeechModel()
+    return this.process.request({ type: 'status', language, ...(model !== null && model !== APPLE && { speechToText: model }) })
   }
 
   /** How many tokens a chat request and its answer may use together, or null when unknown, as for Endpoints. */
@@ -309,7 +316,10 @@ export class Models extends EventEmitter<{ progress: [ModelProgress] }> {
   /** The Built-in speech-to-text model to use, or null when an Endpoint or a not-yet-supported model is selected. */
   private builtInSpeechModel(): string | null {
     const selection = this.deps.settings().speechToText
-    return selection.kind === 'builtIn' && selection.modelId === APPLE ? APPLE : null
+    if (selection.kind !== 'builtIn') return null
+    if (selection.modelId === APPLE) return APPLE
+    const entry = RECOMMENDED_MODELS.find((m) => m.id === selection.modelId && m.task === 'speechToText')
+    return entry && PROCESS_SPEECH_ENGINES.has(entry.engine) ? entry.id : null
   }
 
   /** Like `builtInSpeechModel`, for chat. */

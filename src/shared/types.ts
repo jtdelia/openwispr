@@ -96,6 +96,15 @@ export interface BuiltInStatus {
     /** Tokens the model reads and writes per request, read at runtime; null when unavailable. */
     contextSize: number | null
   }
+  /** The selected downloaded speech-to-text model, when one is selected and installed. */
+  speechToText?: {
+    model: string
+    name: string
+    /** Whether it transcribes the language setting; an empty setting means it auto-detects. */
+    supported: boolean
+    /** ISO language codes, or null when it isn't limited to a known set. */
+    languages: string[] | null
+  }
 }
 
 /** An Apple language-asset download, reported while it runs. */

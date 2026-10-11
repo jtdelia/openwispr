@@ -7,12 +7,16 @@ signal(SIGPIPE, SIG_IGN)
 
 let writer = Writer(fileDescriptor: protocolFD)
 let progress = ProgressReporter(writer: writer)
+let arguments = CommandLine.arguments
+let modelsDir = arguments.firstIndex(of: "--models-dir").flatMap { arguments.indices.contains($0 + 1) ? arguments[$0 + 1] : nil }
 let server = Server(
     writer: writer,
-    appleSpeech: AppleSpeech(requestsAuthorization: CommandLine.arguments.contains("--request-speech-authorization")) { locale, fraction in
+    appleSpeech: AppleSpeech(requestsAuthorization: arguments.contains("--request-speech-authorization")) { locale, fraction in
         await progress.report(locale: locale, fraction: fraction)
     },
-    appleChat: AppleChat()
+    appleChat: AppleChat(),
+    modelsDir: modelsDir.map { URL(fileURLWithPath: $0, isDirectory: true) },
+    parakeet: Parakeet()
 )
 
 for try await line in FileHandle.standardInput.bytes.lines {
