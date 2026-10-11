@@ -31,16 +31,32 @@ export function isLocalEndpoint(baseUrl: string): boolean {
   return /^https?:\/\/(localhost|127\.0\.0\.1|\[::1\])(:|\/|$)/.test(baseUrl)
 }
 
-export interface ProviderConfig {
+export type ModelRole = 'speechToText' | 'chat'
+
+export const MODEL_ROLES: ModelRole[] = ['speechToText', 'chat']
+
+export interface EndpointConfig {
   baseUrl: string
   model: string
   /** Encrypted at rest; plaintext only ever lives in the main process. */
   apiKey: string
 }
 
+/** `modelId` is `apple` for Apple's on-device model, otherwise a downloaded model's id. */
+export type ModelSelection = { kind: 'builtIn'; modelId: string } | ({ kind: 'endpoint' } & EndpointConfig)
+
+export type PublicModelSelection =
+  | { kind: 'builtIn'; modelId: string }
+  | ({ kind: 'endpoint'; hasApiKey: boolean } & Omit<EndpointConfig, 'apiKey'>)
+
+export type ModelSelectionPatch = { kind: 'builtIn'; modelId: string } | ({ kind: 'endpoint' } & Partial<EndpointConfig>)
+
 export interface Settings {
-  transcription: ProviderConfig & { language: string }
-  cleanup: ProviderConfig & { enabled: boolean }
+  speechToText: ModelSelection
+  chat: ModelSelection
+  /** ISO code like `en`; empty to auto-detect. */
+  language: string
+  cleanup: { enabled: boolean }
   shortcuts: Shortcuts
   styles: Record<StyleContext, Style>
   microphoneId: string
@@ -52,14 +68,13 @@ export interface Settings {
 }
 
 /** What the renderer sees: API keys are replaced by a presence flag. */
-export type PublicSettings = Omit<Settings, 'transcription' | 'cleanup'> & {
-  transcription: Omit<Settings['transcription'], 'apiKey'> & { hasApiKey: boolean }
-  cleanup: Omit<Settings['cleanup'], 'apiKey'> & { hasApiKey: boolean }
-}
+export type PublicSettings = Omit<Settings, ModelRole> & Record<ModelRole, PublicModelSelection>
 
 export type SettingsPatch = {
-  [K in keyof Settings]?: Settings[K] extends object ? Partial<Settings[K]> : Settings[K]
-}
+  [K in Exclude<keyof Settings, ModelRole>]?: Settings[K] extends object ? Partial<Settings[K]> : Settings[K]
+} & { [K in ModelRole]?: ModelSelectionPatch }
+
+export type EndpointTestResult = { ok: true } | { ok: false; error: string }
 
 export interface DictionaryEntry {
   id: string

@@ -3,31 +3,22 @@ import { readFileSync, renameSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { app, safeStorage } from 'electron'
 import {
-  DEFAULT_SHORTCUTS,
+  MODEL_ROLES,
   type DictionaryEntry,
   type HistoryEntry,
+  type ModelSelection,
+  type ModelSelectionPatch,
+  type PublicModelSelection,
   type PublicSettings,
   type Settings,
   type SettingsPatch,
   type Snippet,
   type Stats,
 } from '../shared/types'
+import { applySettingsPatch, loadSettings } from './settings'
 
 const HISTORY_LIMIT = 2000
 const ENCRYPTED_PREFIX = 'enc:'
-
-export const DEFAULT_SETTINGS: Settings = {
-  transcription: { baseUrl: 'https://api.openai.com/v1', model: 'gpt-4o-mini-transcribe', apiKey: '', language: '' },
-  cleanup: { enabled: true, baseUrl: 'https://api.openai.com/v1', model: 'gpt-4.1-mini', apiKey: '' },
-  shortcuts: DEFAULT_SHORTCUTS,
-  styles: { personal: 'casual', work: 'casual', email: 'formal', other: 'casual' },
-  microphoneId: '',
-  sounds: true,
-  restoreClipboard: true,
-  showFlowBar: true,
-  launchAtLogin: false,
-  userName: '',
-}
 
 interface Data {
   settings: Settings
@@ -64,16 +55,18 @@ function decrypt(stored: string): string {
   }
 }
 
-function mergeSettings(base: Settings, patch: SettingsPatch): Settings {
-  const merged = { ...base } as Record<string, unknown>
-  for (const [key, value] of Object.entries(patch)) {
-    const current = merged[key]
-    merged[key] =
-      value && typeof value === 'object' && !Array.isArray(value) && current && typeof current === 'object'
-        ? { ...current, ...value }
-        : value
-  }
-  return merged as unknown as Settings
+function decryptSelection(selection: ModelSelection): ModelSelection {
+  return selection.kind === 'endpoint' ? { ...selection, apiKey: decrypt(selection.apiKey) } : selection
+}
+
+function publicSelection(selection: ModelSelection): PublicModelSelection {
+  if (selection.kind !== 'endpoint') return selection
+  const { apiKey, ...rest } = selection
+  return { ...rest, hasApiKey: Boolean(apiKey) }
+}
+
+function encryptSelectionPatch(patch: ModelSelectionPatch): ModelSelectionPatch {
+  return patch.kind === 'endpoint' && patch.apiKey !== undefined ? { ...patch, apiKey: encrypt(patch.apiKey) } : patch
 }
 
 export class Store {
@@ -86,7 +79,7 @@ export class Store {
   constructor() {
     const stored = readJson<Partial<Data>>(this.dataPath, {})
     this.data = {
-      settings: mergeSettings(DEFAULT_SETTINGS, (stored.settings ?? {}) as SettingsPatch),
+      settings: loadSettings((stored.settings ?? {}) as Record<string, unknown>),
       dictionary: stored.dictionary ?? [],
       snippets: stored.snippets ?? [],
     }
@@ -95,39 +88,22 @@ export class Store {
 
   /** Settings with decrypted API keys. Never send this to a renderer. */
   get settings(): Settings {
-    const { transcription, cleanup } = this.data.settings
-    const transcriptionKey = decrypt(transcription.apiKey)
-    const cleanupKey = decrypt(cleanup.apiKey)
-    return {
-      ...this.data.settings,
-      transcription: { ...transcription, apiKey: transcriptionKey },
-      cleanup: {
-        ...cleanup,
-        apiKey: cleanupKey || (cleanup.baseUrl === transcription.baseUrl ? transcriptionKey : ''),
-      },
-    }
+    const { speechToText, chat } = this.data.settings
+    return { ...this.data.settings, speechToText: decryptSelection(speechToText), chat: decryptSelection(chat) }
   }
 
   get publicSettings(): PublicSettings {
-    const { transcription, cleanup, ...rest } = this.settings
-    const { apiKey: transcriptionKey, ...publicTranscription } = transcription
-    const { apiKey: cleanupKey, ...publicCleanup } = cleanup
-    return {
-      ...rest,
-      transcription: { ...publicTranscription, hasApiKey: Boolean(transcriptionKey) },
-      cleanup: { ...publicCleanup, hasApiKey: Boolean(cleanupKey) },
-    }
+    const { speechToText, chat, ...rest } = this.data.settings
+    return { ...rest, speechToText: publicSelection(speechToText), chat: publicSelection(chat) }
   }
 
   updateSettings(patch: SettingsPatch): void {
     const encryptedPatch: SettingsPatch = { ...patch }
-    if (patch.transcription?.apiKey !== undefined) {
-      encryptedPatch.transcription = { ...patch.transcription, apiKey: encrypt(patch.transcription.apiKey) }
+    for (const role of MODEL_ROLES) {
+      const selection = patch[role]
+      if (selection) encryptedPatch[role] = encryptSelectionPatch(selection)
     }
-    if (patch.cleanup?.apiKey !== undefined) {
-      encryptedPatch.cleanup = { ...patch.cleanup, apiKey: encrypt(patch.cleanup.apiKey) }
-    }
-    this.data.settings = mergeSettings(this.data.settings, encryptedPatch)
+    this.data.settings = applySettingsPatch(this.data.settings, encryptedPatch)
     this.save()
   }
 

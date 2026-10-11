@@ -1,7 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { transcriptTurns, withoutEchoes } from '../shared/speakers'
 import type { TranscriptEntry } from '../shared/types'
-import { parseSegments, segmentFormat } from './providers'
 import { SpeakerIdentityMap } from './speakerIdentity'
 import { SelfName, SpeakerTimeline } from './speakerTimeline'
 import { sliceWav, VoiceBank } from './voices'
@@ -150,24 +149,6 @@ describe('VoiceBank', () => {
     const clip = sliceWav(wav(3000), 1000, 2500)
     expect(clip.length).toBe(44 + 1.5 * 16_000 * 2)
     expect(clip.readUInt32LE(40)).toBe(1.5 * 16_000 * 2)
-  })
-})
-
-describe('transcription segments', () => {
-  it('picks the response format the model supports', () => {
-    expect(segmentFormat('gpt-4o-transcribe-diarize')).toBe('diarized_json')
-    expect(segmentFormat('whisper-large-v3-turbo')).toBe('verbose_json')
-    expect(segmentFormat('gpt-4o-mini-transcribe')).toBe('json')
-  })
-
-  it('reads timed and diarized segments, falling back to the whole text', () => {
-    expect(parseSegments({ segments: [{ start: 0.5, end: 2, text: ' Hi ', speaker: 'A' }] }, 5000)).toEqual([
-      { startMs: 500, endMs: 2000, text: 'Hi', speaker: 'A' },
-    ])
-    expect(parseSegments({ text: 'Hello there' }, 5000)).toEqual([
-      { startMs: 0, endMs: 5000, text: 'Hello there', speaker: null },
-    ])
-    expect(parseSegments({ text: '' }, 5000)).toEqual([])
   })
 })
 

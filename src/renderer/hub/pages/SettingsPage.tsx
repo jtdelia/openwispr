@@ -4,6 +4,9 @@ import { microphoneHelp } from '../../../shared/permissions'
 import {
   DEFAULT_SHORTCUTS,
   SHORTCUT_LABELS,
+  type EndpointTestResult,
+  type ModelRole,
+  type PublicModelSelection,
   type PublicSettings,
   type SettingsPatch,
   type ShortcutAction,
@@ -116,24 +119,25 @@ export function SettingsPage() {
 }
 
 function ProviderSection({ settings }: { settings: PublicSettings }) {
-  const { transcription, cleanup } = settings
+  const { speechToText, chat, cleanup } = settings
   const applyPreset = (label: string) => {
     const preset = PRESETS.find((p) => p.label === label)
     if (!preset) return
     update({
-      transcription: { baseUrl: preset.baseUrl, model: preset.transcriptionModel },
-      cleanup: preset.cleanupModel
-        ? { baseUrl: preset.baseUrl, model: preset.cleanupModel }
-        : { enabled: false },
+      speechToText: { kind: 'endpoint', baseUrl: preset.baseUrl, model: preset.transcriptionModel },
+      ...(preset.cleanupModel
+        ? { chat: { kind: 'endpoint', baseUrl: preset.baseUrl, model: preset.cleanupModel } }
+        : { cleanup: { enabled: false } }),
     })
   }
-  const activePreset = PRESETS.find((p) => p.baseUrl === transcription.baseUrl)?.label ?? 'Custom'
+  const activePreset =
+    (speechToText.kind === 'endpoint' && PRESETS.find((p) => p.baseUrl === speechToText.baseUrl)?.label) || 'Custom'
 
   return (
     <>
       <section className="card settings-section">
-        <h2>Transcription</h2>
-        <p className="muted small">Any OpenAI-compatible speech-to-text endpoint.</p>
+        <h2>Speech-to-text</h2>
+        <p className="muted small">Any OpenAI-compatible speech-to-text Endpoint.</p>
         <SettingRow title="Provider">
           <select value={activePreset} onChange={(e) => applyPreset(e.target.value)}>
             {PRESETS.map((p) => (
@@ -142,49 +146,88 @@ function ProviderSection({ settings }: { settings: PublicSettings }) {
             <option disabled>Custom</option>
           </select>
         </SettingRow>
-        <SettingRow title="Base URL">
-          <TextSetting value={transcription.baseUrl} onSave={(baseUrl) => update({ transcription: { baseUrl } })} />
-        </SettingRow>
-        <SettingRow title="Model">
-          <TextSetting value={transcription.model} onSave={(model) => update({ transcription: { model } })} />
-        </SettingRow>
-        <SettingRow title="API key">
-          <SecretSetting hasValue={transcription.hasApiKey} onSave={(apiKey) => update({ transcription: { apiKey } })} />
-        </SettingRow>
+        <SelectionSettings role="speechToText" selection={speechToText} />
         <SettingRow title="Language" description="ISO code like en or de. Leave empty to auto-detect.">
-          <TextSetting
-            value={transcription.language}
-            placeholder="auto"
-            onSave={(language) => update({ transcription: { language } })}
-          />
+          <TextSetting value={settings.language} placeholder="auto" onSave={(language) => update({ language })} />
         </SettingRow>
       </section>
 
       <section className="card settings-section">
-        <h2>AI cleanup</h2>
+        <h2>Chat</h2>
+        <p className="muted small">Cleans up dictations and writes meeting titles and summaries.</p>
         <Toggle
-          title="Clean up transcripts with an LLM"
+          title="Clean up dictations"
           description="Removes filler words, applies self-corrections, fixes punctuation and matches your style."
           checked={cleanup.enabled}
           onChange={(enabled) => update({ cleanup: { enabled } })}
         />
-        {cleanup.enabled && (
-          <>
-            <SettingRow title="Base URL" description="OpenAI-compatible chat completions endpoint.">
-              <TextSetting value={cleanup.baseUrl} onSave={(baseUrl) => update({ cleanup: { baseUrl } })} />
-            </SettingRow>
-            <SettingRow title="Model">
-              <TextSetting value={cleanup.model} onSave={(model) => update({ cleanup: { model } })} />
-            </SettingRow>
-            <SettingRow
-              title="API key"
-              description={cleanup.baseUrl === transcription.baseUrl ? 'Uses the transcription key when left empty.' : undefined}
-            >
-              <SecretSetting hasValue={cleanup.hasApiKey} onSave={(apiKey) => update({ cleanup: { apiKey } })} />
-            </SettingRow>
-          </>
-        )}
+        <SelectionSettings
+          role="chat"
+          selection={chat}
+          keyDescription={
+            chat.kind === 'endpoint' && speechToText.kind === 'endpoint' && chat.baseUrl === speechToText.baseUrl
+              ? 'Uses the speech-to-text key when left empty.'
+              : undefined
+          }
+        />
       </section>
+    </>
+  )
+}
+
+function SelectionSettings(props: { role: ModelRole; selection: PublicModelSelection; keyDescription?: string }) {
+  const { role, selection } = props
+  switch (selection.kind) {
+    case 'builtIn':
+      return (
+        <SettingRow title="Model" description="Built-in models aren’t available yet.">
+          <button className="button" onClick={() => update({ [role]: { kind: 'endpoint' } })}>
+            Use an Endpoint
+          </button>
+        </SettingRow>
+      )
+    case 'endpoint':
+      return (
+        <>
+          <SettingRow title="Base URL">
+            <TextSetting value={selection.baseUrl} onSave={(baseUrl) => update({ [role]: { kind: 'endpoint', baseUrl } })} />
+          </SettingRow>
+          <SettingRow title="Model">
+            <TextSetting value={selection.model} onSave={(model) => update({ [role]: { kind: 'endpoint', model } })} />
+          </SettingRow>
+          <SettingRow title="API key" description={props.keyDescription}>
+            <SecretSetting
+              hasValue={selection.hasApiKey}
+              onSave={(apiKey) => update({ [role]: { kind: 'endpoint', apiKey } })}
+            />
+          </SettingRow>
+          <EndpointTest role={role} />
+        </>
+      )
+    default: {
+      const unreachable: never = selection
+      throw new Error(`unhandled model selection ${JSON.stringify(unreachable)}`)
+    }
+  }
+}
+
+function EndpointTest({ role }: { role: ModelRole }) {
+  const [result, setResult] = useState<EndpointTestResult | 'testing' | null>(null)
+  const test = () => {
+    setResult('testing')
+    void api.testEndpoint(role).then(setResult, (error: unknown) => setResult({ ok: false, error: String(error) }))
+  }
+  return (
+    <>
+      <SettingRow title="Test Endpoint" description="Sends a tiny request to check it answers.">
+        <div className="secret">
+          {result !== null && result !== 'testing' && result.ok && <span className="badge ok">Working</span>}
+          <button className="button" disabled={result === 'testing'} onClick={test}>
+            {result === 'testing' ? 'Testing…' : 'Test'}
+          </button>
+        </div>
+      </SettingRow>
+      {result !== null && result !== 'testing' && !result.ok && <p className="error-text small">{result.error}</p>}
     </>
   )
 }

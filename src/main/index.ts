@@ -2,9 +2,10 @@ import { app, clipboard, ipcMain, Menu, systemPreferences, Tray } from 'electron
 import { Channel, type FlowBarAction, type MeetingChunk, type MeetingRecorderEvent, type RecorderEvent } from '../shared/api'
 import { microphoneHelp } from '../shared/permissions'
 import {
-  isLocalEndpoint,
+  MODEL_ROLES,
   type DictionaryEntry,
   type MeetingPatch,
+  type ModelRole,
   type NotetakerState,
   type PermissionStatus,
   type SettingsPatch,
@@ -13,6 +14,7 @@ import {
 import { DictationController } from './dictation'
 import { Helper } from './helper'
 import { MeetingStore } from './meetingStore'
+import { Models } from './models'
 import { NotetakerController } from './notetaker'
 import { ShortcutEngine } from './shortcutEngine'
 import { Store } from './store'
@@ -31,11 +33,12 @@ async function main(): Promise<void> {
 
   const store = new Store()
   const meetings = new MeetingStore()
+  const models = new Models({ fetch: globalThis.fetch, settings: () => store.settings })
   const helper = new Helper()
   const windows = new Windows()
   const engine = new ShortcutEngine(store.settings.shortcuts)
-  const dictation = new DictationController(helper, store, windows, engine)
-  const notetaker = new NotetakerController(helper, store, meetings, windows, (state) => updateTray(state))
+  const dictation = new DictationController(helper, store, models, windows, engine)
+  const notetaker = new NotetakerController(helper, store, models, meetings, windows, (state) => updateTray(state))
   let capturingShortcut = false
   let captureHeld = new Set<number>()
   let accessibility = { trusted: false, keyTapRunning: false }
@@ -92,6 +95,10 @@ async function main(): Promise<void> {
     app.setLoginItemSettings({ openAtLogin: settings.launchAtLogin })
     windows.broadcast(Channel.dataChanged, 'settings')
     return store.publicSettings
+  })
+  ipcMain.handle(Channel.testEndpoint, (_e, role: ModelRole) => {
+    if (!MODEL_ROLES.includes(role)) throw new Error(`Unknown model role ${String(role)}`)
+    return models.testEndpoint(role)
   })
   ipcMain.handle(Channel.getHistory, () => store.getHistory())
   ipcMain.handle(Channel.deleteHistoryEntry, (_e, id: string) => {
@@ -232,9 +239,7 @@ async function main(): Promise<void> {
   })
 
   const status = await permissions()
-  const { transcription } = store.settings
-  const hasProvider = Boolean(transcription.apiKey) || isLocalEndpoint(transcription.baseUrl)
-  const needsSetup = !hasProvider || !status.accessibility || status.microphone !== 'granted'
+  const needsSetup = !models.availability('speechToText').available || !status.accessibility || status.microphone !== 'granted'
   if (needsSetup || !app.getLoginItemSettings().wasOpenedAtLogin) windows.showHub()
 }
 

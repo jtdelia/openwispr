@@ -10,6 +10,7 @@ function subscribe<T>(channel: string, listener: (payload: T) => void): () => vo
 const api: OpenWisprApi = {
   getSettings: () => ipcRenderer.invoke(Channel.getSettings),
   updateSettings: (patch) => ipcRenderer.invoke(Channel.updateSettings, patch),
+  testEndpoint: (role) => ipcRenderer.invoke(Channel.testEndpoint, role),
   getHistory: () => ipcRenderer.invoke(Channel.getHistory),
   deleteHistoryEntry: (id) => ipcRenderer.invoke(Channel.deleteHistoryEntry, id),
   clearHistory: () => ipcRenderer.invoke(Channel.clearHistory),
