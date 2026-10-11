@@ -1,10 +1,10 @@
 import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process'
 import { EventEmitter } from 'node:events'
 import { existsSync } from 'node:fs'
-import { join } from 'node:path'
 import { createInterface } from 'node:readline'
 import { app } from 'electron'
 import type { MeetingPlatform } from '../shared/types'
+import { HELPER, nativeExecutablePath } from './nativeExecutables'
 
 export interface TextBoxInfo {
   accessibilityIsFunctioning: boolean
@@ -51,12 +51,6 @@ interface HelperEvents {
 const REQUEST_TIMEOUT_MS = 3000
 const RESTART_DELAYS_MS = [500, 1000, 2000, 5000, 10000]
 
-function helperPath(): string {
-  const packaged = join(process.resourcesPath, 'openwispr-helper')
-  if (app.isPackaged) return packaged
-  return join(app.getAppPath(), 'native/helper/.build/release/openwispr-helper')
-}
-
 /** Owns the Swift helper process and its newline-delimited JSON protocol. */
 export class Helper extends EventEmitter<HelperEvents> {
   private child: ChildProcessWithoutNullStreams | null = null
@@ -70,7 +64,11 @@ export class Helper extends EventEmitter<HelperEvents> {
   }
 
   start(): void {
-    const path = helperPath()
+    const path = nativeExecutablePath(HELPER, {
+      isPackaged: app.isPackaged,
+      resourcesPath: process.resourcesPath,
+      appPath: app.getAppPath(),
+    })
     if (!existsSync(path)) {
       console.error(`[helper] binary not found at ${path}; run "npm run helper:build"`)
       return
