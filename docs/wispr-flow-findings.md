@@ -83,6 +83,25 @@ the Notetaker.
   `kTCCServiceAudioCapture`; `Info.plist` carries `NSAudioCaptureUsageDescription`.
 - **Two channels.** Microphone (`getUserMedia`) and system audio are captured as separate 16 kHz
   streams, tagged `mic` / `system`; mic speech is attributed to the user (`self`).
+- **Mic echo.** The meeting mic is opened with `echoCancellation: { ideal: "all" }` (`true` in
+  development), Chromium's system-wide mode that also cancels audio other apps play, so the call
+  coming out of the speakers never reaches the mic transcript. It is turned off only for a
+  VB-Audio Virtual Cable mic on Windows; the settled value is logged, not acted on. Dictation keeps
+  echo cancellation off. The post-meeting refinement upload is stereo Opus (left = mic,
+  right = system), so the server sees both channels separately.
+- **Echo detector ("conference room" mode, `echoDuplicateGate: "suppress"`).** The main process
+  keeps 16384-sample rings of mic and system audio at 8 kHz (about 2 s) and, every 8 chunks, runs
+  GCC-PHAT (FFT cross-spectrum normalized to unit magnitude, inverse FFT, peak = score, argmax =
+  lag). Windows below an RMS floor of 0.003 are skipped. A window counts when score ≥ 0.03; the
+  lag is *locked* when 5 of the last 8 counted lags sit within 35 ms of their median and the mic
+  trails the system audio. Three locked updates start suppression; a 2 s hangover ends it, and
+  after a quiet freeze the detector needs two corroborations before trusting a lock again. It
+  disables itself if analysis takes over 10 ms five times in a row. Suppressed mic sample spans
+  are recorded per window; live, a UI latch hides mic lines while echo is latched (saved entries
+  stay); after the meeting those spans (gap-filled, walked back up to a reach limit to absorb
+  the lead-in) are excluded from the mic channel before refinement. Telemetry lives under
+  `meeting.echo_gate.*`. Wispr's help center still recommends a headset and warns that cleanup
+  can remove real mic speech next to echo.
 - **Live transcript.** Streamed to Wispr's backend; entries `{ id, timestamp, text, speaker,
   startRecordingMs, endRecordingMs, … }` are appended to `meetings/<id>/live.ndjson`. After the
   meeting the server refines the transcript (Soniox) and labels speakers.
@@ -116,7 +135,9 @@ diarization, and an LLM guess (`llm`); a user choice (`user`) overrides all of t
   `MeetingSpeakerSourceReport { platform, source, readStatus, availableSources }`.
 - **Platform anchors** (helper strings). Meet: room URL `^[a-z]{3}-[a-z]{4}-[a-z]{3}$` on
   `meet.google.com`, speaking-indicator DOM class `kssMZb` (classes are pushed from the main process,
-  so they can change without a helper update), name noise words `muted, unmuted, talking, video,
+  so they can change without a helper update; in the live Meet tested here, `kssMZb` marks the
+  main-stage tile and the class that appears only while someone talks is `BlxGDf`, which OpenWispr
+  uses), name noise words `muted, unmuted, talking, video,
   presenting, camera, microphone`. Zoom (`us.zoom.xos`): `active speaker`, `you are speaking`,
   `Show/Hide video render`, a compact-window monitor. Teams: DOM ids `roster-button`,
   `hangup-button`, `microphone-button`, prefix `In this meeting, `, role suffix

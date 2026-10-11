@@ -16,7 +16,7 @@ import type { Helper, SpeakersReport } from './helper'
 import type { MeetingStore } from './meetingStore'
 import { complete, transcribeSegments, type TranscriptSegment } from './providers'
 import { SpeakerIdentityMap } from './speakerIdentity'
-import { SpeakerTimeline } from './speakerTimeline'
+import { SelfName, SpeakerTimeline } from './speakerTimeline'
 import type { Store } from './store'
 import { applyReplacements, transcriptionPrompt } from './textProcessing'
 import { VoiceBank } from './voices'
@@ -27,8 +27,14 @@ const RETRY_DELAY_MS = 1500
 const SUMMARY_TIMEOUT_MS = 180_000
 const TITLE_ATTEMPTS = 3
 const TITLE_TRANSCRIPT_CHARS = 12_000
-/** Classes Google Meet puts on a participant tile's speaking indicator. */
-const MEET_SPEAKING_CLASSES = ['kssMZb']
+/**
+ * How Google Meet marks tiles: a class on the audio indicator present only while that participant
+ * talks, and controls that only the user's own tile has. Meet's class names are minified and change.
+ */
+const MEET_TILE_MARKERS = {
+  speakingClasses: ['BlxGDf'],
+  selfLabels: ['Backgrounds and effects', 'Reframe'],
+}
 
 interface Segment {
   session: number
@@ -43,6 +49,7 @@ interface Segment {
 interface SpeakerMemory {
   voices: VoiceBank
   identities: SpeakerIdentityMap
+  self: SelfName
 }
 
 /** Records meetings (microphone plus system audio), transcribes them in chunks, then titles and summarizes. */
@@ -52,6 +59,7 @@ export class NotetakerController {
   private segment: Segment | null = null
   private onStopped: (() => void) | null = null
   private readonly memories = new Map<string, SpeakerMemory>()
+  private lastSpeaking: string[] = []
 
   constructor(
     private readonly helper: Helper,
@@ -92,7 +100,7 @@ export class NotetakerController {
       systemAudio: { kind: 'starting' },
       speakers: { platform: null, speaking: [] },
     })
-    this.helper.request('startSpeakerPolling', { markerClasses: MEET_SPEAKING_CLASSES }).catch((error: unknown) => {
+    this.helper.request('startSpeakerPolling', MEET_TILE_MARKERS).catch((error: unknown) => {
       console.warn('[notetaker] speaker detection unavailable', error)
     })
     this.windows.flowBar.webContents.send(Channel.meetingRecorderCommand, {
@@ -173,15 +181,17 @@ export class NotetakerController {
   handleSpeakers(report: SpeakersReport): void {
     const segment = this.segment
     if (this.state.kind !== 'recording' || !segment) return
-    const changed = report.speaking.join('\n') !== this.state.speakers.speaking.join('\n')
+    const self = this.memory(segment.meetingId).self.current
+    const others = report.speaking.filter((name) => name !== self)
+    const changed = report.speaking.join('\n') !== this.lastSpeaking.join('\n')
+    this.lastSpeaking = report.speaking
     segment.timeline.push({ at: report.timestamp, speaking: report.speaking })
-    this.setState({ ...this.state, speakers: { platform: report.platform, speaking: report.speaking } })
+    this.setState({ ...this.state, speakers: { platform: report.platform, speaking: others } })
     if (changed) {
-      this.windows.flowBar.webContents.send(Channel.meetingRecorderCommand, {
-        type: 'cut',
-        session: segment.session,
-        source: 'system',
-      })
+      // Cutting the microphone too keeps its chunks to one turn, which is how the user's own name is learned.
+      for (const source of ['mic', 'system'] as const) {
+        this.windows.flowBar.webContents.send(Channel.meetingRecorderCommand, { type: 'cut', session: segment.session, source })
+      }
     }
   }
 
@@ -233,6 +243,9 @@ export class NotetakerController {
     for (const part of parts) {
       if (isLikelyHallucination(part.text)) continue
       const text = applyReplacements(part.text, dictionary)
+      if (chunk.source === 'mic') {
+        memory.self.vote(segment.timeline.dominant(chunk.wallClockMs + part.startMs, chunk.wallClockMs + part.endMs))
+      }
       const speaker = chunk.source === 'system' ? this.attribute(segment, memory, chunk, part, voices) : null
       const startMs = segment.baseRecordedMs + chunk.startMs
       const entry = this.meetings.appendTranscript(segment.meetingId, {
@@ -263,7 +276,7 @@ export class NotetakerController {
     voices: Map<string, number>,
   ): string | null {
     const from = chunk.wallClockMs + part.startMs
-    const shown = segment.timeline.dominant(from, chunk.wallClockMs + part.endMs)
+    const shown = segment.timeline.dominant(from, chunk.wallClockMs + part.endMs, memory.self.current)
     const voice = part.speaker === null ? undefined : voices.get(part.speaker)
     if (voice === undefined) return shown ? appSpeaker(shown) : null
     const named = memory.identities.resolve(voiceSpeaker(voice), shown, from) ?? shown
@@ -274,7 +287,11 @@ export class NotetakerController {
     let memory = this.memories.get(meetingId)
     if (!memory) {
       const used = this.meetings.transcript(meetingId).map((e) => (e.speaker ? (voiceId(e.speaker) ?? 0) : 0))
-      memory = { voices: new VoiceBank(Math.max(0, ...used) + 1), identities: new SpeakerIdentityMap() }
+      memory = {
+        voices: new VoiceBank(Math.max(0, ...used) + 1),
+        identities: new SpeakerIdentityMap(),
+        self: new SelfName(),
+      }
       this.memories.set(meetingId, memory)
     }
     return memory

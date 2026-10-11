@@ -1,5 +1,6 @@
 import { app, clipboard, ipcMain, Menu, systemPreferences, Tray } from 'electron'
 import { Channel, type FlowBarAction, type MeetingChunk, type MeetingRecorderEvent, type RecorderEvent } from '../shared/api'
+import { microphoneHelp } from '../shared/permissions'
 import {
   isLocalEndpoint,
   type DictionaryEntry,
@@ -116,6 +117,7 @@ async function main(): Promise<void> {
   ipcMain.handle(Channel.requestAccessibility, () => permissions(true))
   ipcMain.handle(Channel.requestMicrophone, async () => {
     await systemPreferences.askForMediaAccess('microphone')
+    windows.broadcast(Channel.dataChanged, 'permissions')
     return permissions()
   })
   ipcMain.handle(Channel.copyText, (_e, text: string) => clipboard.writeText(text))
@@ -159,7 +161,16 @@ async function main(): Promise<void> {
   })
   ipcMain.handle(Channel.generateMeetingSummary, (_e, id: string) => notetaker.generateSummary(id))
   ipcMain.handle(Channel.getNotetakerState, () => notetaker.current)
-  ipcMain.handle(Channel.startMeetingRecording, (_e, id: string) => notetaker.start(id))
+  ipcMain.handle(Channel.startMeetingRecording, async (_e, id: string) => {
+    // Without access macOS hands the recorder a silent stream instead of failing.
+    if (systemPreferences.getMediaAccessStatus('microphone') === 'not-determined') {
+      await systemPreferences.askForMediaAccess('microphone')
+      windows.broadcast(Channel.dataChanged, 'permissions')
+    }
+    const help = microphoneHelp(systemPreferences.getMediaAccessStatus('microphone'))
+    if (help) throw new Error(`OpenWispr can't use the microphone. ${help}`)
+    notetaker.start(id)
+  })
   ipcMain.handle(Channel.stopMeetingRecording, () => void notetaker.stop())
   ipcMain.on(Channel.meetingRecorderEvent, (_e, event: MeetingRecorderEvent) => notetaker.handleRecorderEvent(event))
   ipcMain.on(Channel.submitMeetingChunk, (_e, chunk: MeetingChunk) => notetaker.handleChunk(chunk))

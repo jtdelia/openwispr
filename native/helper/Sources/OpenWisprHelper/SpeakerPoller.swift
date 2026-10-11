@@ -15,13 +15,13 @@ final class SpeakerPoller {
     private static let interval = DispatchTimeInterval.milliseconds(300)
     private let queue = DispatchQueue(label: "openwispr.helper.speakers", qos: .utility)
     private var generation = 0
-    private var markerClasses: Set<String> = []
+    private var markers = TileMarkers(speakingClasses: [], selfLabels: [])
     private var last: SpeakerSnapshot?
 
-    func start(markerClasses: [String]) {
+    func start(markers: TileMarkers) {
         queue.async {
             self.generation += 1
-            self.markerClasses = Set(markerClasses)
+            self.markers = markers
             self.last = nil
             self.tick(self.generation)
         }
@@ -33,7 +33,7 @@ final class SpeakerPoller {
 
     private func tick(_ generation: Int) {
         guard generation == self.generation else { return }
-        let snapshot = MeetingSpeakers.read(markerClasses: markerClasses)
+        let snapshot = MeetingSpeakers.read(markers: markers)
         if snapshot != last {
             last = snapshot
             IPC.send([
@@ -48,6 +48,13 @@ final class SpeakerPoller {
     }
 }
 
+/// How a web meeting marks tiles: classes present only while that participant talks, and labels of
+/// controls that only appear on the user's own tile.
+struct TileMarkers {
+    let speakingClasses: Set<String>
+    let selfLabels: Set<String>
+}
+
 enum MeetingSpeakers {
     private static let browsers: Set<String> = [
         "com.apple.safari", "com.brave.browser", "com.google.chrome", "com.google.chrome.beta",
@@ -56,7 +63,7 @@ enum MeetingSpeakers {
     ]
     private static let timeBudget: TimeInterval = 0.25
 
-    static func read(markerClasses: Set<String>) -> SpeakerSnapshot {
+    static func read(markers: TileMarkers) -> SpeakerSnapshot {
         for app in NSWorkspace.shared.runningApplications {
             guard let bundle = app.bundleIdentifier?.lowercased() else { continue }
             let platform: String
@@ -74,14 +81,14 @@ enum MeetingSpeakers {
             if platform == "meet" {
                 AXUIElementSetAttributeValue(appElement, "AXEnhancedUserInterface" as CFString, kCFBooleanTrue)
             }
-            if let snapshot = readApp(appElement, platform: platform, markerClasses: markerClasses) {
+            if let snapshot = readApp(appElement, platform: platform, markers: markers) {
                 return snapshot
             }
         }
         return SpeakerSnapshot()
     }
 
-    private static func readApp(_ appElement: AXUIElement, platform: String, markerClasses: Set<String>) -> SpeakerSnapshot? {
+    private static func readApp(_ appElement: AXUIElement, platform: String, markers: TileMarkers) -> SpeakerSnapshot? {
         guard let windows = copy(appElement, kAXWindowsAttribute) as? [AXUIElement] else { return nil }
         let deadline = Date().addingTimeInterval(timeBudget)
         for window in windows {
@@ -99,7 +106,7 @@ enum MeetingSpeakers {
                 if platform == "teams" && !tree.domIds.contains("hangup-button") { continue }
                 if platform == "slack" && !tree.domIds.contains(where: { $0.hasPrefix("calling-roster-item-") }) { continue }
                 var snapshot = SpeakerSnapshot(platform: platform)
-                tree.collectSpeakers(markerClasses: markerClasses, into: &snapshot)
+                tree.collectSpeakers(markers: markers, into: &snapshot)
                 snapshot.speaking.sort()
                 return snapshot
             }
@@ -177,7 +184,7 @@ private struct Tree {
         }
     }
 
-    func collectSpeakers(markerClasses: Set<String>, into snapshot: inout SpeakerSnapshot) {
+    func collectSpeakers(markers: TileMarkers, into snapshot: inout SpeakerSnapshot) {
         var names = Set<String>()
         for node in nodes where !Self.textRoles.contains(node.role) {
             for label in node.labels {
@@ -188,10 +195,11 @@ private struct Tree {
                 }
             }
         }
-        if !markerClasses.isEmpty {
+        if !markers.speakingClasses.isEmpty {
             let tileNames = namesBySubtree()
-            for (index, node) in nodes.enumerated() where !markerClasses.isDisjoint(with: node.classes) {
-                switch tileName(above: index, tileNames) {
+            let ownTile = ancestors(ofNodesLabelled: markers.selfLabels)
+            for (index, node) in nodes.enumerated() where !markers.speakingClasses.isDisjoint(with: node.classes) {
+                switch tileName(above: index, tileNames, ownTile: ownTile) {
                 case .some(SpeakerLabel.selfName): snapshot.selfSpeaking = true
                 case .some(let name): names.insert(name)
                 case .none: break
@@ -216,13 +224,28 @@ private struct Tree {
         return result
     }
 
+    /// Nodes within `tileDepth` levels above any node carrying one of `labels`.
+    private func ancestors(ofNodesLabelled labels: Set<String>) -> Set<Int> {
+        var result = Set<Int>()
+        for (index, node) in nodes.enumerated() where !labels.isDisjoint(with: node.labels) {
+            var current: Int? = index
+            for _ in 0...Self.tileDepth {
+                guard let at = current else { break }
+                result.insert(at)
+                current = nodes[at].parent
+            }
+        }
+        return result
+    }
+
     /// The nearest ancestor naming exactly one person is the indicator's tile; one naming several is a grid.
-    private func tileName(above index: Int, _ tileNames: [Int: Set<String>]) -> String? {
+    private func tileName(above index: Int, _ tileNames: [Int: Set<String>], ownTile: Set<Int>) -> String? {
         var current: Int? = index
         for _ in 0...Self.tileDepth {
             guard let at = current else { return nil }
             if let names = tileNames[at] {
-                return names.count == 1 ? names.first : nil
+                guard names.count == 1 else { return nil }
+                return ownTile.contains(at) ? SpeakerLabel.selfName : names.first
             }
             current = nodes[at].parent
         }

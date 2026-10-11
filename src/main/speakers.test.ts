@@ -3,7 +3,7 @@ import { transcriptTurns, withoutEchoes } from '../shared/speakers'
 import type { TranscriptEntry } from '../shared/types'
 import { parseSegments, segmentFormat } from './providers'
 import { SpeakerIdentityMap } from './speakerIdentity'
-import { SpeakerTimeline } from './speakerTimeline'
+import { SelfName, SpeakerTimeline } from './speakerTimeline'
 import { sliceWav, VoiceBank } from './voices'
 
 const entry = (source: TranscriptEntry['source'], startMs: number, text: string, speaker?: string): TranscriptEntry => ({
@@ -43,6 +43,28 @@ describe('SpeakerTimeline', () => {
     expect(timeline.dominant(3500, 7500)).toBeNull()
     expect(timeline.dominant(0, 900)).toBeNull()
     expect(timeline.dominant(4800, 6100)).toBeNull()
+  })
+})
+
+describe('SelfName', () => {
+  it('takes the user to be whoever is shown talking during their microphone speech', () => {
+    const self = new SelfName()
+    self.vote('Noh Wan')
+    expect(self.current).toBeNull()
+    self.vote(null)
+    self.vote('Noh Wan')
+    expect(self.current).toBe('Noh Wan')
+    self.vote('John')
+    self.vote('John')
+    expect(self.current).toBeNull()
+  })
+
+  it('lets the timeline ignore the user when crediting call audio', () => {
+    const timeline = new SpeakerTimeline()
+    timeline.push({ at: 0, speaking: ['Noh Wan'] })
+    timeline.push({ at: 4000, speaking: ['John'] })
+    expect(timeline.dominant(3000, 5000)).toBeNull()
+    expect(timeline.dominant(3000, 5000, 'Noh Wan')).toBe('John')
   })
 })
 

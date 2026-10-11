@@ -63,7 +63,10 @@ Then in **Settings**:
 1. **Accessibility**: click *Grant access* and enable the app in System Settings → Privacy & Security →
    Accessibility. In development the entry is the app that launched Electron (Terminal, your IDE, or
    `Electron`). OpenWispr picks up the grant without a restart.
-2. **Microphone**: click *Allow*.
+2. **Microphone**: click *Allow*. When Electron is started from a terminal or editor, macOS asks on
+   behalf of that app and may show no prompt at all, leaving the microphone silent. Run
+   `npm run start:standalone` instead: it starts the built app as `Electron`, which gets its own
+   Microphone and Accessibility entries.
 3. **Transcription**: pick a provider and paste an API key.
 4. **Notetaker** (optional): the first recording asks for *System Audio Recording* permission
    (System Settings → Privacy & Security → Screen & System Audio Recording). Without it, only your
@@ -89,6 +92,7 @@ If `fn` opens the emoji picker, set System Settings → Keyboard → "Press 🌐
 | --- | --- |
 | `npm run dev` | Build the helper and start Electron with hot reload |
 | `npm run build` | Production build into `out/` |
+| `npm run start:standalone` | Build, then launch outside the terminal so macOS permission prompts appear |
 | `npm run typecheck` | Type-check main, preload and renderer |
 | `npm test` | Unit tests for the shortcut engine and text processing |
 | `npm run helper:build` | Build the Swift helper only |

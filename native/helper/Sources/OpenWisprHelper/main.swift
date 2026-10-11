@@ -36,7 +36,10 @@ func handle(_ message: [String: Any]) {
     case "getAppInfo":
         IPC.respond(id: id, result: Accessibility.appInfo())
     case "startSpeakerPolling":
-        SpeakerPoller.shared.start(markerClasses: message["markerClasses"] as? [String] ?? [])
+        SpeakerPoller.shared.start(markers: TileMarkers(
+            speakingClasses: Set(message["speakingClasses"] as? [String] ?? []),
+            selfLabels: Set(message["selfLabels"] as? [String] ?? [])
+        ))
         IPC.respond(id: id, result: [:])
     case "stopSpeakerPolling":
         SpeakerPoller.shared.stop()

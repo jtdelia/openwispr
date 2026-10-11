@@ -10,6 +10,7 @@
     "dev": "npm run helper:build && electron-vite dev",
     "build": "npm run helper:build && electron-vite build",
     "start": "electron-vite preview",
+    "start:standalone": "npm run build && open -n node_modules/electron/dist/Electron.app --args \"$PWD\"",
     "helper:build": "swift build -c release --package-path native/helper",
     "typecheck": "tsc --noEmit -p tsconfig.node.json && tsc --noEmit -p tsconfig.web.json",
     "test": "vitest run"

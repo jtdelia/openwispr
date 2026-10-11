@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react'
 import { comboLabel, MODIFIER_KEYS } from '../../../shared/keycodes'
+import { microphoneHelp } from '../../../shared/permissions'
 import {
   DEFAULT_SHORTCUTS,
   SHORTCUT_LABELS,
@@ -29,6 +30,7 @@ const update = (patch: SettingsPatch) => void api.updateSettings(patch)
 export function SettingsPage() {
   const [settings] = useData(api.getSettings, ['settings'])
   const [permissions] = useData(api.getPermissions, ['permissions'])
+  const [micHelp, setMicHelp] = useState<string | null>(null)
   if (!settings) return null
 
   return (
@@ -55,11 +57,15 @@ export function SettingsPage() {
           {permissions?.microphone === 'granted' ? (
             <span className="badge ok">Granted</span>
           ) : (
-            <button className="button" onClick={() => void api.requestMicrophone()}>
+            <button
+              className="button"
+              onClick={() => void api.requestMicrophone().then((status) => setMicHelp(microphoneHelp(status.microphone)))}
+            >
               Allow
             </button>
           )}
         </SettingRow>
+        {micHelp && permissions?.microphone !== 'granted' && <p className="error-text small">{micHelp}</p>}
         {permissions && !permissions.helperRunning && (
           <p className="error-text">The native helper isn’t running. Build it with npm run helper:build and restart.</p>
         )}

@@ -36,7 +36,8 @@ export class MeetingRecorder {
       audio: {
         deviceId: deviceId ? { exact: deviceId } : undefined,
         channelCount: 1,
-        echoCancellation: true,
+        // `true` only cancels audio this app plays; "all" also removes the call playing from other apps.
+        echoCancellation: { ideal: 'all' },
         noiseSuppression: true,
         autoGainControl: true,
       },
