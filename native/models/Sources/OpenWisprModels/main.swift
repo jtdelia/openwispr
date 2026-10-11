@@ -11,7 +11,8 @@ let server = Server(
     writer: writer,
     appleSpeech: AppleSpeech(requestsAuthorization: CommandLine.arguments.contains("--request-speech-authorization")) { locale, fraction in
         await progress.report(locale: locale, fraction: fraction)
-    }
+    },
+    appleChat: AppleChat()
 )
 
 for try await line in FileHandle.standardInput.bytes.lines {

@@ -1,10 +1,10 @@
 import { spawn } from 'node:child_process'
 import { createInterface } from 'node:readline'
-import type { BuiltInStatus, ModelProgress } from '../shared/types'
+import type { BuiltInStatus, ModelProgress, ModelRole } from '../shared/types'
 import type { ChatMessage } from './providers'
 
 /** A model to have ready before it's needed. `id` is `apple` or a downloaded model's id. */
-export type ModelRef = { role: 'speechToText'; id: string; language: string }
+export type ModelRef = { role: ModelRole; id: string; language: string }
 
 /** What the main process asks the model process; `audio` is a base64 16 kHz mono PCM16 WAV. */
 export type ModelRequestBody =

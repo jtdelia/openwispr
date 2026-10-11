@@ -87,6 +87,15 @@ export interface BuiltInStatus {
     /** BCP 47 locales Apple's speech-to-text supports on this Mac, read at runtime. */
     locales: string[]
   }
+  appleChat: {
+    available: boolean
+    /** Why Apple's chat model can't be used, when it can't. */
+    reason?: string
+    /** What the user can do about it: turn Apple Intelligence on in System Settings, or wait for its model. */
+    fix?: 'turnOnAppleIntelligence' | 'wait'
+    /** Tokens the model reads and writes per request, read at runtime; null when unavailable. */
+    contextSize: number | null
+  }
 }
 
 /** An Apple language-asset download, reported while it runs. */

@@ -9,6 +9,7 @@ protocol SpeechToTextEngine: Sendable {
 
 struct StatusResult: Encodable, Sendable {
     let appleSpeech: AppleSpeechStatus
+    let appleChat: AppleChatStatus
 }
 
 /// Sends a download's progress, skipping updates of less than a percent.
@@ -31,6 +32,7 @@ actor ProgressReporter {
 struct Server: Sendable {
     let writer: Writer
     let appleSpeech: AppleSpeech
+    let appleChat: AppleChat
 
     func handle(_ request: Request) async {
         do {
@@ -58,12 +60,15 @@ struct Server: Sendable {
             guard let audio = Data(base64Encoded: request.audio) else { throw ModelError.modelFailed("The audio isn't valid base64") }
             let segments = try await engine.transcribe(try PCM16.samples(from: audio), language: request.language, prompt: request.prompt ?? "")
             return TranscribeResult(text: segments.map(\.text).joined(), segments: request.segments == true ? segments : nil)
-        case .complete:
-            throw ModelError.unavailable("Built-in chat models are not available yet")
+        case let .complete(request):
+            return try await chat(request.model).complete(request)
         case let .load(models):
             for model in models {
-                guard model.role == "speechToText" else { throw ModelError.unavailable("Built-in \(model.role) models are not available yet") }
-                try await speechToText(model.id).load(language: model.language ?? "")
+                switch model.role {
+                case "speechToText": try await speechToText(model.id).load(language: model.language ?? "")
+                case "chat": try chat(model.id).load()
+                default: throw ModelError.unavailable("Built-in \(model.role) models are not available yet")
+                }
             }
             return Empty()
         case let .unload(ids):
@@ -72,7 +77,14 @@ struct Server: Sendable {
             }
             return Empty()
         case let .status(language):
-            return StatusResult(appleSpeech: await appleSpeech.status(language: language))
+            return StatusResult(appleSpeech: await appleSpeech.status(language: language), appleChat: appleChat.status())
+        }
+    }
+
+    private func chat(_ model: String) throws -> AppleChat {
+        switch model {
+        case "apple": appleChat
+        default: throw ModelError.unavailable("Unknown chat model \(model)")
         }
     }
 
