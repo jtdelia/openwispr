@@ -17,7 +17,8 @@ let server = Server(
     appleChat: AppleChat(),
     modelsDir: modelsDir.map { URL(fileURLWithPath: $0, isDirectory: true) },
     parakeet: Parakeet(),
-    whisper: Whisper()
+    whisper: Whisper(),
+    mlxChat: MLXChat(executableDir: Bundle.main.executableURL?.deletingLastPathComponent())
 )
 
 for try await line in FileHandle.standardInput.bytes.lines {

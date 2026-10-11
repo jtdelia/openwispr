@@ -36,7 +36,7 @@ struct CompleteResult: Encodable, Sendable {
 
 /// Apple's on-device Foundation Models chat model. The user can turn Apple Intelligence on or off at
 /// any time, so availability is read on every request.
-struct AppleChat: Sendable {
+struct AppleChat: ChatEngine {
     /// What Apple's model answers, as text rather than an error, when it declines.
     private static let textRefusal = "Unable to work with that request."
     /// Below this many tokens left for the answer, a request is treated as too long.
@@ -63,6 +63,9 @@ struct AppleChat: Sendable {
         try Self.ensureAvailable(model)
         LanguageModelSession(model: model).prewarm()
     }
+
+    /// The system owns Apple's model.
+    func unload() async {}
 
     func complete(_ request: CompleteRequest) async throws -> CompleteResult {
         let model = Self.model()

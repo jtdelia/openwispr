@@ -7,15 +7,17 @@ struct DownloadedModel: Decodable, Sendable {
     let task: String
     let engine: String
     let languageCodes: [String]?
+    /// Extra chat template variables, like `enable_thinking: false` for models that think by default.
+    let chatTemplateContext: [String: Bool]?
     let installed: Bool
     var folder: URL = URL(fileURLWithPath: "/")
 
-    private enum CodingKeys: String, CodingKey { case id, name, task, engine, languageCodes, installed }
+    private enum CodingKeys: String, CodingKey { case id, name, task, engine, languageCodes, chatTemplateContext, installed }
 
     /// Only installed models count; a model mid-download or paused has an incomplete folder.
     static func installed(_ id: String, in modelsDir: URL?) throws -> DownloadedModel {
         guard let modelsDir, !id.isEmpty, !id.contains("/"), id != "..", id != "." else {
-            throw ModelError.unavailable("Unknown speech-to-text model \(id)")
+            throw ModelError.unavailable("Unknown model \(id)")
         }
         let folder = modelsDir.appending(path: id, directoryHint: .isDirectory)
         guard let data = try? Data(contentsOf: folder.appending(path: "manifest.json")),
