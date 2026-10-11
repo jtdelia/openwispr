@@ -500,11 +500,56 @@ describe('settings migration', () => {
     expect(sent[0].form?.get('language')).toBe('fr')
   })
 
-  it('fills in defaults for a fresh install and leaves already-migrated settings alone', () => {
+  it("gives a fresh install Apple's models for both roles, so it works with no key and no download", async () => {
     const fresh = loadSettings({})
-    expect(fresh.speechToText).toEqual({ kind: 'endpoint', baseUrl: 'https://api.openai.com/v1', model: 'gpt-4o-mini-transcribe', apiKey: '' })
-    expect(fresh.chat).toEqual({ kind: 'endpoint', baseUrl: 'https://api.openai.com/v1', model: 'gpt-4.1-mini', apiKey: '' })
+    expect(fresh.speechToText).toEqual({ kind: 'builtIn', modelId: 'apple' })
+    expect(fresh.chat).toEqual({ kind: 'builtIn', modelId: 'apple' })
     expect(fresh.cleanup).toEqual({ enabled: true })
+
+    const process = fakeModelProcess((request) => ({ result: { text: request.type === 'complete' ? 'Hi.' : 'hi' } }))
+    const { models: m, sent } = models(fresh, undefined, process.transport)
+    expect(m.availability('speechToText')).toEqual({ available: true })
+    expect(m.availability('chat')).toEqual({ available: true })
+    expect(await m.transcribe(WAV, { prompt: '' })).toBe('hi')
+    expect(await m.complete([{ role: 'user', content: 'hi' }])).toBe('Hi.')
+    expect(sent).toHaveLength(0)
+  })
+
+  it('moves an untouched OpenAI default to Apple, keeping custom base URLs and stored keys on Endpoints', () => {
+    const openAiDefault = {
+      transcription: { baseUrl: 'https://api.openai.com/v1', model: 'gpt-4o-mini-transcribe', apiKey: '', language: '' },
+      cleanup: { enabled: true, baseUrl: 'https://api.openai.com/v1', model: 'gpt-4.1-mini', apiKey: '' },
+    }
+    const untouched = loadSettings(openAiDefault)
+    expect(untouched.speechToText).toEqual({ kind: 'builtIn', modelId: 'apple' })
+    expect(untouched.chat).toEqual({ kind: 'builtIn', modelId: 'apple' })
+
+    const withChatKey = loadSettings({ ...openAiDefault, cleanup: { ...openAiDefault.cleanup, apiKey: 'enc:chat' } })
+    expect(withChatKey.speechToText).toEqual({ kind: 'builtIn', modelId: 'apple' })
+    expect(withChatKey.chat).toEqual({ kind: 'endpoint', baseUrl: 'https://api.openai.com/v1', model: 'gpt-4.1-mini', apiKey: 'enc:chat' })
+
+    const local = loadSettings({
+      ...openAiDefault,
+      transcription: { ...openAiDefault.transcription, baseUrl: 'http://localhost:8000/v1', model: 'distil-whisper' },
+    })
+    expect(local.speechToText).toEqual({ kind: 'endpoint', baseUrl: 'http://localhost:8000/v1', model: 'distil-whisper', apiKey: '' })
+  })
+
+  it('keeps chat on the Endpoint whose key it shared with transcription', () => {
+    const settings = loadSettings({
+      transcription: { baseUrl: 'https://api.openai.com/v1', model: 'gpt-4o-mini-transcribe', apiKey: 'enc:openai' },
+      cleanup: { enabled: true, baseUrl: 'https://api.openai.com/v1', model: 'gpt-4.1-mini', apiKey: '' },
+    })
+    expect(settings.speechToText).toMatchObject({ kind: 'endpoint', apiKey: 'enc:openai' })
+    expect(settings.chat).toEqual({ kind: 'endpoint', baseUrl: 'https://api.openai.com/v1', model: 'gpt-4.1-mini', apiKey: '' })
+  })
+
+  it('leaves already-migrated Endpoint selections alone', () => {
+    const migrated = {
+      speechToText: { kind: 'endpoint', baseUrl: 'https://api.openai.com/v1', model: 'gpt-4o-mini-transcribe', apiKey: '' },
+      chat: { kind: 'endpoint', baseUrl: 'https://api.openai.com/v1', model: 'gpt-4.1-mini', apiKey: '' },
+    }
+    expect(loadSettings(migrated)).toMatchObject(migrated)
     expect(loadSettings(JSON.parse(JSON.stringify(loadSettings(groqFile))))).toEqual(loadSettings(groqFile))
   })
 })
