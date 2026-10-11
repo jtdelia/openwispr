@@ -63,17 +63,32 @@ describe('cleanupMessages', () => {
     transcript: 'once i finish the draft',
     style: 'casual' as const,
     category: 'other' as const,
+    appName: 'Notes',
     beforeText: "I'll send it over",
     dictionary: [{ id: '1', word: 'OpenWispr' }],
     userName: 'Jane',
   }
 
-  it('sends only the transcript to clean up, and says when it continues a sentence without repeating it', () => {
+  it('passes the app and the text before the cursor as context, and says when it continues a sentence', () => {
     const [system, user] = cleanupMessages(input)
-    expect(user).toEqual({ role: 'user', content: '<transcript>\nonce i finish the draft\n</transcript>' })
+    expect(user).toEqual({
+      role: 'user',
+      content: '<context>\nApp: Notes\nText before the cursor: "I\'ll send it over"\n</context>\n<transcript>\nonce i finish the draft\n</transcript>',
+    })
     expect(system.content).toMatch(/continues a sentence/)
-    expect(system.content).not.toContain("I'll send it over")
     expect(system.content).toContain('OpenWispr')
+  })
+
+  it('quotes only the end of a long text before the cursor, and leaves out context it has none of', () => {
+    const [, long] = cleanupMessages({ ...input, beforeText: `${'x'.repeat(1000)} the end` })
+    expect(long.content).toContain('the end"')
+    expect(long.content.length).toBeLessThan(600)
+    const [, bare] = cleanupMessages({ ...input, appName: '', beforeText: '' })
+    expect(bare.content).toBe('<transcript>\nonce i finish the draft\n</transcript>')
+  })
+
+  it("forbids greetings and sign-offs the speaker didn't say", () => {
+    expect(cleanupMessages(input)[0].content).toMatch(/greeting or sign-off that wasn't spoken/)
   })
 
   it('leaves out the continuation rule after a finished sentence or with nothing before the cursor', () => {

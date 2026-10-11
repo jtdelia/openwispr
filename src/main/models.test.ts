@@ -509,6 +509,7 @@ const DICTATION: CleanupInput = {
   transcript: 'um so lets meet on tuesday',
   style: 'casual',
   category: 'other',
+  appName: '',
   beforeText: '',
   dictionary: [],
   userName: '',

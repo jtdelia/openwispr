@@ -109,6 +109,7 @@ async function cleanUp(complete, fixture) {
     transcript: fixture.transcript,
     style: fixture.style ?? 'casual',
     category: fixture.category ?? 'other',
+    appName: fixture.appName ?? '',
     beforeText: fixture.beforeText ?? '',
     dictionary: [],
     userName: '',
