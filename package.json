@@ -16,6 +16,7 @@
     "models:build": "swift build -c release --package-path native/models",
     "native:build": "npm run helper:build && npm run models:build",
     "models:smoke": "node scripts/smoke-models.mjs",
+    "models:smoke-summary": "vite-node scripts/smoke-summary.ts --",
     "typecheck": "tsc --noEmit -p tsconfig.node.json && tsc --noEmit -p tsconfig.web.json",
     "test": "vitest run"
   },

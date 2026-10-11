@@ -2,18 +2,10 @@ import { Channel, type MeetingChunk, type MeetingRecorderEvent } from '../shared
 import { appSpeaker, speakerKey, speakerLabel, voiceId, voiceSpeaker } from '../shared/speakers'
 import { MIN_SUMMARY_WORDS } from '../shared/summaryState'
 import type { NotetakerState, TranscriptSource } from '../shared/types'
-import {
-  chunkPrompt,
-  formatTranscript,
-  isLikelyHallucination,
-  relabelSummary,
-  sanitizeSummary,
-  sanitizeTitle,
-  summaryMessages,
-  titleMessages,
-} from './meetingProcessing'
+import { chunkPrompt, formatTranscript, isLikelyHallucination, relabelSummary } from './meetingProcessing'
 import type { Helper, SpeakersReport } from './helper'
 import type { MeetingStore } from './meetingStore'
+import { summarizeMeeting, titleMeeting } from './meetingSummary'
 import type { Models, TranscriptSegment } from './models'
 import { SpeakerIdentityMap } from './speakerIdentity'
 import { SelfName, SpeakerTimeline } from './speakerTimeline'
@@ -26,7 +18,6 @@ const STOP_FLUSH_TIMEOUT_MS = 5000
 const RETRY_DELAY_MS = 1500
 const SUMMARY_TIMEOUT_MS = 180_000
 const TITLE_ATTEMPTS = 3
-const TITLE_TRANSCRIPT_CHARS = 12_000
 /**
  * How Google Meet marks tiles: a class on the audio indicator present only while that participant
  * talks, and controls that only the user's own tile has. Meet's class names are minified and change.
@@ -325,16 +316,11 @@ export class NotetakerController {
   private async generateTitle(meetingId: string): Promise<void> {
     const detail = this.meetings.detail(meetingId)
     if (!this.models.availability('chat').available || !detail) return
-    const transcript = formatTranscript(detail.transcript, detail.speakerNames, this.store.settings.userName).slice(
-      0,
-      TITLE_TRANSCRIPT_CHARS,
-    )
+    const transcript = formatTranscript(detail.transcript, detail.speakerNames, this.store.settings.userName)
     if (!transcript && !detail.notes.trim()) return
     for (let attempt = 1; attempt <= TITLE_ATTEMPTS; attempt++) {
       try {
-        const title = sanitizeTitle(
-          await this.models.complete(titleMessages({ transcript, notes: detail.notes }), { label: 'Title' }),
-        )
+        const title = await titleMeeting(this.models, { transcript, notes: detail.notes })
         // The user may have typed a title while the request was in flight.
         if (title && !this.meetings.get(meetingId)?.title.trim()) {
           this.meetings.update(meetingId, { title })
@@ -363,18 +349,18 @@ export class NotetakerController {
       const detail = this.meetings.detail(meetingId)
       if (!detail) return
       const { userName } = this.store.settings
-      const output = await this.models.complete(
-        summaryMessages({
+      const summary = await summarizeMeeting(
+        this.models,
+        {
           title: detail.title,
           transcript: formatTranscript(detail.transcript, detail.speakerNames, userName),
           notes: detail.notes,
           userName,
           dictionary: this.store.dictionary,
           recordedAt: detail.createdAt,
-        }),
-        { label: 'Summary', timeoutMs: SUMMARY_TIMEOUT_MS },
+        },
+        { timeoutMs: SUMMARY_TIMEOUT_MS },
       )
-      const summary = sanitizeSummary(output)
       if (!summary) throw new Error('The model returned an empty summary')
       this.meetings.update(meetingId, { summary, summaryRecordedMs: detail.recordedMs, summaryError: null })
     } catch (error) {
