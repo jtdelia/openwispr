@@ -50,6 +50,7 @@ interface SpeakerMemory {
   voices: VoiceBank
   identities: SpeakerIdentityMap
   self: SelfName
+  lastCallSpeaker: string | null
 }
 
 /** Records meetings (microphone plus system audio), transcribes them in chunks, then titles and summarizes. */
@@ -244,7 +245,8 @@ export class NotetakerController {
       if (isLikelyHallucination(part.text)) continue
       const text = applyReplacements(part.text, dictionary)
       if (chunk.source === 'mic') {
-        memory.self.vote(segment.timeline.dominant(chunk.wallClockMs + part.startMs, chunk.wallClockMs + part.endMs))
+        const from = chunk.wallClockMs + part.startMs
+        memory.self.vote(segment.timeline.dominant(from, chunk.wallClockMs + part.endMs, memory.self.remoteNames))
       }
       const speaker = chunk.source === 'system' ? this.attribute(segment, memory, chunk, part, voices) : null
       const startMs = segment.baseRecordedMs + chunk.startMs
@@ -276,11 +278,19 @@ export class NotetakerController {
     voices: Map<string, number>,
   ): string | null {
     const from = chunk.wallClockMs + part.startMs
-    const shown = segment.timeline.dominant(from, chunk.wallClockMs + part.endMs, memory.self.current)
+    const self = memory.self.current
+    const credit = segment.timeline.credit(from, chunk.wallClockMs + part.endMs, {
+      ignore: self ? [self] : [],
+      previous: memory.lastCallSpeaker,
+      isRemote: (name) => memory.self.isRemote(name),
+    })
+    if (credit?.clear) memory.self.heardOnCall(credit.name)
+    const shown = credit?.name ?? null
     const voice = part.speaker === null ? undefined : voices.get(part.speaker)
-    if (voice === undefined) return shown ? appSpeaker(shown) : null
-    const named = memory.identities.resolve(voiceSpeaker(voice), shown, from) ?? shown
-    return named ? appSpeaker(named) : voiceSpeaker(voice)
+    const named = voice === undefined ? shown : (memory.identities.resolve(voiceSpeaker(voice), shown, from) ?? shown)
+    if (named) memory.lastCallSpeaker = named
+    if (named) return appSpeaker(named)
+    return voice === undefined ? null : voiceSpeaker(voice)
   }
 
   private memory(meetingId: string): SpeakerMemory {
@@ -291,6 +301,7 @@ export class NotetakerController {
         voices: new VoiceBank(Math.max(0, ...used) + 1),
         identities: new SpeakerIdentityMap(),
         self: new SelfName(),
+        lastCallSpeaker: null,
       }
       this.memories.set(meetingId, memory)
     }
