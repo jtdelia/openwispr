@@ -1,7 +1,12 @@
+import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
+import type { ModelManifest } from './modelDownloads'
 import type { ModelSettings } from './models'
 import { Models } from './models'
 import type { ModelProcessMessage, ModelProcessTransport, ModelRequest } from './modelProcess'
+import { RECOMMENDED_MODELS } from './recommendedModels'
 import { summarizeMeeting, titleMeeting } from './meetingSummary'
 import type { SummaryInput } from './meetingProcessing'
 
@@ -10,9 +15,13 @@ type CompleteRequest = Extract<ModelRequest, { type: 'complete' }>
 /**
  * A model process whose chat model has `contextSize` tokens and counts `charsPerToken` characters as
  * one token. Like Apple's, it rejects a request that leaves fewer than 16 tokens for the answer, and
- * answers each completion with `answer`.
+ * answers each completion with `answer`. With `chatModel`, that downloaded model has `contextSize`
+ * and Apple's chat model a smaller one.
  */
-function fakeChatProcess(contextSize: number, { charsPerToken = 4, answer = (n: number) => `S${n}` } = {}) {
+function fakeChatProcess(
+  contextSize: number,
+  { charsPerToken = 4, answer = (n: number) => `S${n}`, chatModel }: { charsPerToken?: number; answer?: (n: number) => string; chatModel?: string } = {},
+) {
   const completions: CompleteRequest[] = []
   const transport: ModelProcessTransport = {
     start(handlers) {
@@ -23,7 +32,11 @@ function fakeChatProcess(contextSize: number, { charsPerToken = 4, answer = (n: 
           switch (request.type) {
             case 'status':
               reply(request.id, {
-                result: { appleSpeech: { available: true, locale: 'en-US', locales: ['en-US'] }, appleChat: { available: true, contextSize } },
+                result: {
+                  appleSpeech: { available: true, locale: 'en-US', locales: ['en-US'] },
+                  appleChat: { available: true, contextSize: chatModel ? 4096 : contextSize },
+                  ...(chatModel && { chat: { model: chatModel, name: chatModel, contextSize } }),
+                },
               })
               return
             case 'complete': {
@@ -111,6 +124,37 @@ describe('summarizeMeeting', () => {
     const small = fakeChatProcess(4096)
     await summarizeMeeting(appleModels(small.transport), meeting(transcript(10)))
     expect(small.completions).toHaveLength(1)
+  })
+
+  it("sizes the pieces from a downloaded MLX chat model's context", async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'openwispr-summary-'))
+    try {
+      const id = 'qwen3-4b-instruct-2507'
+      const entry = RECOMMENDED_MODELS.find((m) => m.id === id)!
+      const manifest: ModelManifest = { ...entry, userAdded: false, installed: true, files: [] }
+      await mkdir(join(dir, id), { recursive: true })
+      await writeFile(join(dir, id, 'manifest.json'), JSON.stringify(manifest))
+      const settings = { ...APPLE_CHAT, chat: { kind: 'builtIn', modelId: id } } satisfies ModelSettings
+      const process = fakeChatProcess(32_768, { chatModel: id })
+      const models = new Models({ fetch: globalThis.fetch, settings: () => settings, transport: process.transport, modelsDir: dir })
+      await models.ready
+      const lines = transcript(1600)
+
+      const summary = await summarizeMeeting(models, meeting(lines))
+
+      const { completions } = process
+      expect(summary).toBe(`S${completions.length}`)
+      expect(completions.every((c) => c.model === id)).toBe(true)
+      const sections = completions.slice(0, -1)
+      expect(sections.length).toBeGreaterThan(1)
+      // Far fewer pieces than Apple's 4096-token context would need, and each larger than it allows.
+      expect(sections.length).toBeLessThan(8)
+      for (const section of sections) expect(content(section).length / 4).toBeGreaterThan(4096)
+      const covered = sections.flatMap((s) => lines.split('\n').filter((line) => content(s).includes(line)))
+      expect(covered).toEqual(lines.split('\n'))
+    } finally {
+      await rm(dir, { recursive: true, force: true })
+    }
   })
 
   it('splits a section further when the model counts more tokens than expected', async () => {
