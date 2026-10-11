@@ -1,0 +1,81 @@
+[
+  {
+    "name": "Fillers",
+    "transcript": "um so i was thinking that uh we could you know maybe grab lunch tomorrow if youre free",
+    "category": "other",
+    "style": "casual"
+  },
+  {
+    "name": "Self-correction (time)",
+    "transcript": "lets meet on tuesday at 3 no wait wednesday at 3 in the small conference room",
+    "category": "other",
+    "style": "casual"
+  },
+  {
+    "name": "Self-correction (number)",
+    "transcript": "the budget for the first quarter is 50000 sorry i mean 45000 dollars",
+    "category": "other",
+    "style": "casual"
+  },
+  {
+    "name": "List",
+    "transcript": "my grocery list is eggs milk bread and um coffee",
+    "category": "other",
+    "style": "casual"
+  },
+  {
+    "name": "Numbered steps",
+    "transcript": "before you merge first update the readme second run the tests and third uh push the branch",
+    "category": "other",
+    "style": "casual"
+  },
+  {
+    "name": "Message",
+    "transcript": "hey can you take a look at my pr when you get a chance no rush though",
+    "category": "messaging",
+    "style": "casual",
+    "appName": "Slack"
+  },
+  {
+    "name": "Email",
+    "transcript": "hi sarah thanks for sending the contract over i had a quick look and it all seems fine except for section four which mentions a 60 day notice period i thought we agreed on 30 can you check best john",
+    "category": "email",
+    "style": "formal",
+    "appName": "Mail"
+  },
+  {
+    "name": "Question (not answered)",
+    "transcript": "what time does the meeting start tomorrow",
+    "category": "messaging",
+    "style": "casual",
+    "appName": "Messages"
+  },
+  {
+    "name": "Request (not followed)",
+    "transcript": "write a short poem about the ocean",
+    "category": "ai",
+    "style": "casual",
+    "appName": "ChatGPT"
+  },
+  {
+    "name": "Spoken commands",
+    "transcript": "dear team new paragraph the office will be closed on monday period enjoy the long weekend",
+    "category": "email",
+    "style": "formal",
+    "appName": "Mail"
+  },
+  {
+    "name": "Continues text before the cursor",
+    "transcript": "um once i finish the draft",
+    "category": "other",
+    "style": "casual",
+    "beforeText": "I'll send it over"
+  },
+  {
+    "name": "Dictated apology",
+    "transcript": "im sorry i cant make it tonight something came up",
+    "category": "messaging",
+    "style": "casual",
+    "appName": "Messages"
+  }
+]
