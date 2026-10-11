@@ -156,6 +156,15 @@ describe('Models with Built-in speech-to-text', () => {
     expect(process.requests()[0]).toMatchObject({ type: 'transcribe', segments: true })
   })
 
+  it('treats a Built-in answer without segments as one segment covering the chunk, and no text as none', async () => {
+    const untimed = models(APPLE_SPEECH, undefined, fakeModelProcess(() => ({ result: { text: ' Hi there ' } })).transport)
+    expect(await untimed.models.transcribeSegments(WAV, { durationMs: 5000, prompt: '' })).toEqual([
+      { startMs: 0, endMs: 5000, text: 'Hi there', speaker: null },
+    ])
+    const silent = models(APPLE_SPEECH, undefined, fakeModelProcess(() => ({ result: { text: '', segments: [] } })).transport)
+    expect(await silent.models.transcribeSegments(WAV, { durationMs: 5000, prompt: '' })).toEqual([])
+  })
+
   it('starts the model process and loads the model for the language when a dictation starts', async () => {
     const process = fakeModelProcess()
     const { models: m } = models(APPLE_SPEECH, undefined, process.transport)
@@ -620,6 +629,19 @@ describe('Models segments for meetings', () => {
     ])
     expect(plain.sent[0].form?.get('response_format')).toBe('json')
     const silent = withModel('gpt-4o-mini-transcribe', () => Response.json({ text: '' }))
+    expect(await silent.models.transcribeSegments(WAV, { durationMs: 5000, prompt: '' })).toEqual([])
+  })
+
+  it('falls back to the whole text when a timed reply has no usable segments, and to none when it has no text', async () => {
+    const untimed = withModel('whisper-large-v3-turbo', () => Response.json({ text: 'Hello there', segments: [{ start: 0, end: 1, text: ' ' }] }))
+    expect(await untimed.models.transcribeSegments(WAV, { durationMs: 5000, prompt: '' })).toEqual([
+      { startMs: 0, endMs: 5000, text: 'Hello there', speaker: null },
+    ])
+    const missing = withModel('whisper-large-v3-turbo', () => Response.json({ text: 'Hello there' }))
+    expect(await missing.models.transcribeSegments(WAV, { durationMs: 5000, prompt: '' })).toEqual([
+      { startMs: 0, endMs: 5000, text: 'Hello there', speaker: null },
+    ])
+    const silent = withModel('whisper-large-v3-turbo', () => Response.json({ text: '', segments: [] }))
     expect(await silent.models.transcribeSegments(WAV, { durationMs: 5000, prompt: '' })).toEqual([])
   })
 })
