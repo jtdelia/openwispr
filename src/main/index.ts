@@ -1,3 +1,4 @@
+import { join } from 'node:path'
 import { app, clipboard, ipcMain, Menu, systemPreferences, Tray } from 'electron'
 import { Channel, type FlowBarAction, type MeetingChunk, type MeetingRecorderEvent, type RecorderEvent } from '../shared/api'
 import { microphoneHelp } from '../shared/permissions'
@@ -33,7 +34,11 @@ async function main(): Promise<void> {
 
   const store = new Store()
   const meetings = new MeetingStore()
-  const models = new Models({ fetch: globalThis.fetch, settings: () => store.settings })
+  const models = new Models({
+    fetch: globalThis.fetch,
+    settings: () => store.settings,
+    modelsDir: join(app.getPath('userData'), 'models'),
+  })
   const helper = new Helper()
   const windows = new Windows()
   const engine = new ShortcutEngine(store.settings.shortcuts)

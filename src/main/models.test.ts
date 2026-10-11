@@ -37,7 +37,7 @@ const ENDPOINTS = {
 
 function models(settings: Partial<Settings> & ModelSettings, reply?: (url: string) => Response) {
   const fake = fakeFetch(reply)
-  return { models: new Models({ fetch: fake.fetch, settings: () => settings }), sent: fake.sent }
+  return { models: new Models({ fetch: fake.fetch, settings: () => settings, modelsDir: '/nonexistent' }), sent: fake.sent }
 }
 
 describe('Models routing', () => {

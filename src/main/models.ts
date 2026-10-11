@@ -1,3 +1,4 @@
+import { totalmem } from 'node:os'
 import {
   isLocalEndpoint,
   type EndpointConfig,
@@ -5,6 +6,9 @@ import {
   type ModelRole,
   type Settings,
 } from '../shared/types'
+import type { ModelEntry, ModelLibrary, ModelStatus } from '../shared/modelLibrary'
+import { ModelDownloads } from './modelDownloads'
+import { RECOMMENDED_MODELS } from './recommendedModels'
 import {
   complete,
   transcribe,
@@ -25,10 +29,18 @@ export interface ModelsDeps {
   fetch: Fetch
   /** Current settings with decrypted API keys. */
   settings: () => ModelSettings
+  /** Where downloaded Built-in models live, one folder per model. */
+  modelsDir: string
+  /** Defaults to this Mac's. */
+  physicalMemoryBytes?: number
+  /** Delay before retrying a dropped download; defaults to 2 s, doubling per attempt. */
+  retryDelayMs?: number
 }
 
 const BUILT_IN_UNAVAILABLE = 'Built-in models are not available yet'
 const TEST_TIMEOUT_MS = 20_000
+/** A model needing more than this share of physical memory would likely make the Mac swap. */
+const MEMORY_SHARE = 0.6
 
 /** 16 kHz mono PCM16 silence. */
 function silentWav(durationMs: number): Buffer {
@@ -51,7 +63,61 @@ function silentWav(durationMs: number): Buffer {
 
 /** The only way Dictation and the Notetaker reach a speech-to-text or chat model. */
 export class Models {
-  constructor(private readonly deps: ModelsDeps) {}
+  private readonly libraryListeners = new Set<() => void>()
+  private readonly downloads: ModelDownloads
+
+  constructor(private readonly deps: ModelsDeps) {
+    this.downloads = new ModelDownloads({
+      fetch: deps.fetch,
+      dir: deps.modelsDir,
+      retryDelayMs: deps.retryDelayMs ?? 2000,
+      onChange: () => this.libraryListeners.forEach((listener) => listener()),
+    })
+  }
+
+  /** Recommended models and the ones the user added, with their download state and disk usage. */
+  async library(): Promise<ModelLibrary> {
+    const physicalMemoryBytes = this.deps.physicalMemoryBytes ?? totalmem()
+    const status = async (model: ModelEntry, userAdded: boolean): Promise<ModelStatus> => ({
+      model,
+      recommended: !userAdded,
+      userAdded,
+      oversized: model.memoryBytes > physicalMemoryBytes * MEMORY_SHARE,
+      state: await this.downloads.state(model.id),
+    })
+    const added = (await this.downloads.manifests()).filter((manifest) => manifest.userAdded)
+    return {
+      models: await Promise.all([
+        ...RECOMMENDED_MODELS.map((model) => status(model, false)),
+        ...added.map(({ userAdded, installed, files, ...model }) => status(model, userAdded)),
+      ]),
+      diskUsageBytes: await this.downloads.diskUsage(),
+      physicalMemoryBytes,
+    }
+  }
+
+  /** Called on every download state change and, while downloading, a few times a second. */
+  onLibraryChanged(listener: () => void): () => void {
+    this.libraryListeners.add(listener)
+    return () => this.libraryListeners.delete(listener)
+  }
+
+  /** Downloads or resumes a Recommended model; resolves once installed or cancelled. */
+  download(id: string): Promise<void> {
+    const model = RECOMMENDED_MODELS.find((m) => m.id === id)
+    if (!model) return Promise.reject(new Error(`Unknown model ${id}`))
+    return this.downloads.start(model, { userAdded: false })
+  }
+
+  /** Stops a download and discards what it fetched. */
+  cancelDownload(id: string): Promise<void> {
+    return this.downloads.cancel(id)
+  }
+
+  /** Deletes a downloaded model; returns the bytes freed. */
+  removeModel(id: string): Promise<number> {
+    return this.downloads.remove(id)
+  }
 
   /**
    * Whether `role` can be used right now. A chat Endpoint needs no key, since local servers don't ask
