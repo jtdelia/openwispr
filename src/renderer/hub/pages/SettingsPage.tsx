@@ -172,6 +172,9 @@ function ProviderSection({ settings }: { settings: PublicSettings }) {
           <TextSetting value={settings.language} placeholder="auto" onSave={(language) => update({ language })} />
         </SettingRow>
         {isAppleSpeech && <AppleSpeechStatus language={settings.language} />}
+        {speechToText.kind === 'builtIn' && !isAppleSpeech && (
+          <DownloadedSpeechStatus modelId={speechToText.modelId} language={settings.language} />
+        )}
       </section>
 
       <section className="card settings-section">
@@ -300,6 +303,30 @@ function AppleSpeechStatus({ language }: { language: string }) {
         Transcribes as {appleSpeech.locale}. The first dictation in a new language downloads Apple’s language files.
       </p>
     )
+  )
+}
+
+/** Whether the selected downloaded speech-to-text model supports the language setting. */
+function DownloadedSpeechStatus({ modelId, language }: { modelId: string; language: string }) {
+  const [status, setStatus] = useState<BuiltInStatus['speechToText'] | null>(null)
+
+  useEffect(() => {
+    let current = true
+    void api.getBuiltInStatus().then(
+      (next) => current && setStatus(next.speechToText ?? null),
+      () => current && setStatus(null),
+    )
+    return () => {
+      current = false
+    }
+  }, [modelId, language])
+
+  if (!status || status.supported || status.languages === null) return null
+  return (
+    <p className="error-text small">
+      {status.name} doesn’t support {languageName(language)}. It supports {status.languages.map(languageName).join(', ')}.
+      Choose one of these, or use a Whisper model or an Endpoint for this language.
+    </p>
   )
 }
 
