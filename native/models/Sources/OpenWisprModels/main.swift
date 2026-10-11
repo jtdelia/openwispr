@@ -15,7 +15,8 @@ let server = Server(
         await progress.report(locale: locale, fraction: fraction)
     },
     modelsDir: modelsDir.map { URL(fileURLWithPath: $0, isDirectory: true) },
-    parakeet: Parakeet()
+    parakeet: Parakeet(),
+    whisper: Whisper()
 )
 
 for try await line in FileHandle.standardInput.bytes.lines {

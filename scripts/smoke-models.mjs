@@ -1,7 +1,8 @@
 #!/usr/bin/env node
 // Manual smoke test: transcribes a clip through the model process and prints latency.
-// Usage: npm run models:smoke -- [clip.wav] [--language en] [--model apple] [--models-dir dir]
-// --model is `apple` or a downloaded model's id, looked up in --models-dir (defaults to the app's).
+// Usage: npm run models:smoke -- [clip.wav] [--language en] [--prompt "OpenWispr"] [--model apple] [--models-dir dir]
+// --model is `apple` or a downloaded model's id, looked up in --models-dir (defaults to the app's). The first
+// load of a downloaded Core ML model (like `whisper-small`) compiles it for this Mac and can take minutes.
 // Set OPENWISPR_MODELS to test another build, e.g. dist/mac-arm64/OpenWispr.app/Contents/Resources/openwispr-models.
 // The clip must be a 16 kHz mono 16-bit WAV, e.g. `say -o clip.wav --file-format=WAVE --data-format=LEI16@16000 "…"`.
 import { spawn } from 'node:child_process'
@@ -16,6 +17,7 @@ function option(name, fallback) {
   return index >= 0 ? args.splice(index, 2)[1] : fallback
 }
 const language = option('--language', 'en')
+const prompt = option('--prompt', '')
 const model = option('--model', 'apple')
 const modelsDir = option('--models-dir', join(homedir(), 'Library/Application Support/OpenWispr/models'))
 const clip = args[0] ?? 'scripts/fixtures/dictation-en.wav'
@@ -63,7 +65,7 @@ async function timed(label, body) {
   return result
 }
 
-const transcribe = { type: 'transcribe', model, audio: audio.toString('base64'), language, prompt: '', segments: true }
+const transcribe = { type: 'transcribe', model, audio: audio.toString('base64'), language, prompt, segments: true }
 
 try {
   console.log(`Clip: ${clip} (${audioSeconds.toFixed(1)} s), model "${model}", language "${language}"`)
