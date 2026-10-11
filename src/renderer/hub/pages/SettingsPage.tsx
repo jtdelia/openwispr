@@ -32,6 +32,10 @@ const PRESETS: Preset[] = [
   { label: 'Groq', baseUrl: 'https://api.groq.com/openai/v1', transcriptionModel: 'whisper-large-v3-turbo', cleanupModel: 'llama-3.3-70b-versatile' },
   { label: 'Local (Speaches / faster-whisper)', baseUrl: 'http://localhost:8000/v1', transcriptionModel: 'Systran/faster-distil-whisper-large-v3', cleanupModel: '' },
 ]
+const CHAT_PRESETS = PRESETS.filter((p) => p.cleanupModel)
+
+/** The Apple Intelligence & Siri pane; there's no deep link to the switch itself. */
+const APPLE_INTELLIGENCE_SETTINGS = 'x-apple.systempreferences:com.apple.Siri-Settings.extension'
 
 const update = (patch: SettingsPatch) => void api.updateSettings(patch)
 
@@ -128,23 +132,25 @@ export function SettingsPage() {
 function ProviderSection({ settings }: { settings: PublicSettings }) {
   const { speechToText, chat, cleanup } = settings
   const isAppleSpeech = speechToText.kind === 'builtIn' && speechToText.modelId === 'apple'
-  const applyPreset = (label: string) => {
+  const isAppleChat = chat.kind === 'builtIn' && chat.modelId === 'apple'
+  const applySpeechPreset = (label: string) => {
     if (label === APPLE_OPTION) {
       update({ speechToText: { kind: 'builtIn', modelId: 'apple' } })
       return
     }
     const preset = PRESETS.find((p) => p.label === label)
-    if (!preset) return
-    update({
-      speechToText: { kind: 'endpoint', baseUrl: preset.baseUrl, model: preset.transcriptionModel },
-      ...(preset.cleanupModel
-        ? { chat: { kind: 'endpoint', baseUrl: preset.baseUrl, model: preset.cleanupModel } }
-        : { cleanup: { enabled: false } }),
-    })
+    if (preset) update({ speechToText: { kind: 'endpoint', baseUrl: preset.baseUrl, model: preset.transcriptionModel } })
   }
-  const activePreset = isAppleSpeech
-    ? APPLE_OPTION
-    : (speechToText.kind === 'endpoint' && PRESETS.find((p) => p.baseUrl === speechToText.baseUrl)?.label) || 'Custom'
+  const applyChatPreset = (label: string) => {
+    if (label === APPLE_OPTION) {
+      update({ chat: { kind: 'builtIn', modelId: 'apple' } })
+      return
+    }
+    const preset = CHAT_PRESETS.find((p) => p.label === label)
+    if (preset) update({ chat: { kind: 'endpoint', baseUrl: preset.baseUrl, model: preset.cleanupModel } })
+  }
+  const activeSpeechPreset = isAppleSpeech ? APPLE_OPTION : presetLabel(PRESETS, speechToText)
+  const activeChatPreset = isAppleChat ? APPLE_OPTION : presetLabel(CHAT_PRESETS, chat)
 
   return (
     <>
@@ -152,13 +158,7 @@ function ProviderSection({ settings }: { settings: PublicSettings }) {
         <h2>Speech-to-text</h2>
         <p className="muted small">Apple’s on-device model, or any OpenAI-compatible speech-to-text Endpoint.</p>
         <SettingRow title="Provider">
-          <select value={activePreset} onChange={(e) => applyPreset(e.target.value)}>
-            <option>{APPLE_OPTION}</option>
-            {PRESETS.map((p) => (
-              <option key={p.label}>{p.label}</option>
-            ))}
-            <option disabled>Custom</option>
-          </select>
+          <ProviderSelect value={activeSpeechPreset} presets={PRESETS} onChange={applySpeechPreset} />
         </SettingRow>
         <SelectionSettings role="speechToText" selection={speechToText} />
         <SettingRow
@@ -186,6 +186,9 @@ function ProviderSection({ settings }: { settings: PublicSettings }) {
           checked={cleanup.enabled}
           onChange={(enabled) => update({ cleanup: { enabled } })}
         />
+        <SettingRow title="Provider">
+          <ProviderSelect value={activeChatPreset} presets={CHAT_PRESETS} onChange={applyChatPreset} />
+        </SettingRow>
         <SelectionSettings
           role="chat"
           selection={chat}
@@ -195,8 +198,25 @@ function ProviderSection({ settings }: { settings: PublicSettings }) {
               : undefined
           }
         />
+        {isAppleChat && <AppleChatStatus />}
       </section>
     </>
+  )
+}
+
+function presetLabel(presets: Preset[], selection: PublicModelSelection): string {
+  return (selection.kind === 'endpoint' && presets.find((p) => p.baseUrl === selection.baseUrl)?.label) || 'Custom'
+}
+
+function ProviderSelect(props: { value: string; presets: Preset[]; onChange: (label: string) => void }) {
+  return (
+    <select value={props.value} onChange={(e) => props.onChange(e.target.value)}>
+      <option>{APPLE_OPTION}</option>
+      {props.presets.map((p) => (
+        <option key={p.label}>{p.label}</option>
+      ))}
+      <option disabled>Custom</option>
+    </select>
   )
 }
 
@@ -207,6 +227,13 @@ function SelectionSettings(props: { role: ModelRole; selection: PublicModelSelec
       if (role === 'speechToText' && selection.modelId === 'apple') {
         return (
           <SettingRow title="Model" description="Apple’s on-device speech-to-text. Your audio never leaves this Mac.">
+            <span className="badge ok">Built-in</span>
+          </SettingRow>
+        )
+      }
+      if (role === 'chat' && selection.modelId === 'apple') {
+        return (
+          <SettingRow title="Model" description="Apple Intelligence’s on-device model. Your text never leaves this Mac.">
             <span className="badge ok">Built-in</span>
           </SettingRow>
         )
@@ -303,6 +330,48 @@ function AppleSpeechStatus({ language }: { language: string }) {
         Transcribes as {appleSpeech.locale}. The first dictation in a new language downloads Apple’s language files.
       </p>
     )
+  )
+}
+
+/** Whether Apple Intelligence is on, checked again when the user comes back from System Settings. */
+function AppleChatStatus() {
+  const [status, setStatus] = useState<BuiltInStatus['appleChat'] | { error: string } | null>(null)
+
+  useEffect(() => {
+    let current = true
+    const check = () =>
+      void api.getBuiltInStatus().then(
+        (next) => current && setStatus(next.appleChat),
+        (error: unknown) => current && setStatus({ error: error instanceof Error ? error.message : String(error) }),
+      )
+    check()
+    window.addEventListener('focus', check)
+    return () => {
+      current = false
+      window.removeEventListener('focus', check)
+    }
+  }, [])
+
+  if (status === null) return null
+  if ('error' in status) return <p className="error-text small">Couldn’t check Apple’s chat model: {status.error}</p>
+  if (status.available) {
+    return <p className="muted small">Reads up to {status.contextSize} tokens per request on this Mac.</p>
+  }
+  return (
+    <p className="error-text small">
+      {status.reason}, so dictations are inserted without Cleanup and meetings get no title or summary.{' '}
+      {status.fix === 'turnOnAppleIntelligence' && (
+        <>
+          Turn it on in{' '}
+          <a href={APPLE_INTELLIGENCE_SETTINGS} target="_blank" rel="noreferrer">
+            System Settings → Apple Intelligence &amp; Siri
+          </a>
+          , or use an Endpoint.{' '}
+        </>
+      )}
+      {status.fix === 'wait' && 'It’s usable once the download finishes. '}
+      Downloadable chat models are coming.
+    </p>
   )
 }
 
