@@ -4,7 +4,9 @@ import { microphoneHelp } from '../../../shared/permissions'
 import {
   DEFAULT_SHORTCUTS,
   SHORTCUT_LABELS,
+  type BuiltInStatus,
   type EndpointTestResult,
+  type ModelProgress,
   type ModelRole,
   type PublicModelSelection,
   type PublicSettings,
@@ -21,6 +23,8 @@ interface Preset {
   transcriptionModel: string
   cleanupModel: string
 }
+
+const APPLE_OPTION = 'Apple (on this Mac)'
 
 const PRESETS: Preset[] = [
   { label: 'OpenAI', baseUrl: 'https://api.openai.com/v1', transcriptionModel: 'gpt-4o-mini-transcribe', cleanupModel: 'gpt-4.1-mini' },
@@ -120,7 +124,12 @@ export function SettingsPage() {
 
 function ProviderSection({ settings }: { settings: PublicSettings }) {
   const { speechToText, chat, cleanup } = settings
+  const isAppleSpeech = speechToText.kind === 'builtIn' && speechToText.modelId === 'apple'
   const applyPreset = (label: string) => {
+    if (label === APPLE_OPTION) {
+      update({ speechToText: { kind: 'builtIn', modelId: 'apple' } })
+      return
+    }
     const preset = PRESETS.find((p) => p.label === label)
     if (!preset) return
     update({
@@ -130,16 +139,18 @@ function ProviderSection({ settings }: { settings: PublicSettings }) {
         : { cleanup: { enabled: false } }),
     })
   }
-  const activePreset =
-    (speechToText.kind === 'endpoint' && PRESETS.find((p) => p.baseUrl === speechToText.baseUrl)?.label) || 'Custom'
+  const activePreset = isAppleSpeech
+    ? APPLE_OPTION
+    : (speechToText.kind === 'endpoint' && PRESETS.find((p) => p.baseUrl === speechToText.baseUrl)?.label) || 'Custom'
 
   return (
     <>
       <section className="card settings-section">
         <h2>Speech-to-text</h2>
-        <p className="muted small">Any OpenAI-compatible speech-to-text Endpoint.</p>
+        <p className="muted small">Apple’s on-device model, or any OpenAI-compatible speech-to-text Endpoint.</p>
         <SettingRow title="Provider">
           <select value={activePreset} onChange={(e) => applyPreset(e.target.value)}>
+            <option>{APPLE_OPTION}</option>
             {PRESETS.map((p) => (
               <option key={p.label}>{p.label}</option>
             ))}
@@ -147,9 +158,17 @@ function ProviderSection({ settings }: { settings: PublicSettings }) {
           </select>
         </SettingRow>
         <SelectionSettings role="speechToText" selection={speechToText} />
-        <SettingRow title="Language" description="ISO code like en or de. Leave empty to auto-detect.">
+        <SettingRow
+          title="Language"
+          description={
+            isAppleSpeech
+              ? 'ISO code like en or de. Leave empty to use your Mac’s language.'
+              : 'ISO code like en or de. Leave empty to auto-detect.'
+          }
+        >
           <TextSetting value={settings.language} placeholder="auto" onSave={(language) => update({ language })} />
         </SettingRow>
+        {isAppleSpeech && <AppleSpeechStatus language={settings.language} />}
       </section>
 
       <section className="card settings-section">
@@ -179,8 +198,15 @@ function SelectionSettings(props: { role: ModelRole; selection: PublicModelSelec
   const { role, selection } = props
   switch (selection.kind) {
     case 'builtIn':
+      if (role === 'speechToText' && selection.modelId === 'apple') {
+        return (
+          <SettingRow title="Model" description="Apple’s on-device speech-to-text. Your audio never leaves this Mac.">
+            <span className="badge ok">Built-in</span>
+          </SettingRow>
+        )
+      }
       return (
-        <SettingRow title="Model" description="Built-in models aren’t available yet.">
+        <SettingRow title="Model" description="This Built-in model isn’t available yet.">
           <button className="button" onClick={() => update({ [role]: { kind: 'endpoint' } })}>
             Use an Endpoint
           </button>
@@ -209,6 +235,69 @@ function SelectionSettings(props: { role: ModelRole; selection: PublicModelSelec
       throw new Error(`unhandled model selection ${JSON.stringify(unreachable)}`)
     }
   }
+}
+
+const languageNames = new Intl.DisplayNames(undefined, { type: 'language' })
+
+function languageName(code: string): string {
+  if (!code) return 'your Mac’s language'
+  try {
+    return languageNames.of(code) ?? code
+  } catch {
+    return code
+  }
+}
+
+/** Whether Apple supports the language setting, and its language-asset downloads as they run. */
+function AppleSpeechStatus({ language }: { language: string }) {
+  const [status, setStatus] = useState<BuiltInStatus | { error: string } | null>(null)
+  const [download, setDownload] = useState<ModelProgress | null>(null)
+
+  useEffect(() => {
+    let current = true
+    void api.getBuiltInStatus().then(
+      (next) => current && setStatus(next),
+      (error: unknown) => current && setStatus({ error: error instanceof Error ? error.message : String(error) }),
+    )
+    return () => {
+      current = false
+    }
+  }, [language])
+
+  useEffect(
+    () =>
+      api.onModelProgress((progress) => {
+        if (progress.kind === 'appleSpeechAssets') setDownload(progress.fraction < 1 ? progress : null)
+      }),
+    [],
+  )
+
+  const downloadNotice = download && (
+    <p className="muted small">
+      Downloading Apple’s speech-to-text for {download.locale}… {Math.round(download.fraction * 100)}%
+    </p>
+  )
+  if (status === null) return downloadNotice
+  if ('error' in status) return <p className="error-text small">Couldn’t check Apple’s speech-to-text: {status.error}</p>
+  const { appleSpeech } = status
+  if (!appleSpeech.available) return <p className="error-text small">{appleSpeech.reason}</p>
+  if (appleSpeech.locale === null) {
+    const supported = [...new Set(appleSpeech.locales.map((locale) => languageName(locale.split('-')[0])))]
+    return (
+      <p className="error-text small">
+        Apple’s speech-to-text doesn’t support {languageName(language)}. On this Mac it supports{' '}
+        {supported.join(', ')}. Choose one of these, or use an Endpoint for this language. Downloadable Whisper models
+        for more languages are coming.
+      </p>
+    )
+  }
+  return (
+    downloadNotice ?? (
+      <p className="muted small">
+        Transcribes as {appleSpeech.locale}. The first dictation in a new language downloads Apple’s language files.
+      </p>
+    )
+  )
 }
 
 function EndpointTest({ role }: { role: ModelRole }) {
