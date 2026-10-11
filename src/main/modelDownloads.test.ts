@@ -4,6 +4,7 @@ import { mkdtemp, readFile, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import type { ModelProcessTransport } from './modelProcess'
 import { Models, type ModelSettings } from './models'
 
 const SETTINGS: ModelSettings = {
@@ -101,8 +102,21 @@ afterEach(async () => {
   await rm(dir, { recursive: true, force: true })
 })
 
+const noModelProcess: ModelProcessTransport = {
+  start: () => {
+    throw new Error('Downloads must not start the model process')
+  },
+}
+
 function models(hub: ReturnType<typeof fakeHub>, physicalMemoryBytes = 32 * GB) {
-  return new Models({ fetch: hub.fetch, settings: () => SETTINGS, modelsDir: dir, physicalMemoryBytes, retryDelayMs: 0 })
+  return new Models({
+    fetch: hub.fetch,
+    settings: () => SETTINGS,
+    transport: noModelProcess,
+    modelsDir: dir,
+    physicalMemoryBytes,
+    retryDelayMs: 0,
+  })
 }
 
 async function status(m: Models, id: string) {
