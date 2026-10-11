@@ -51,7 +51,7 @@ export class SpeechChunker {
   private cutRequested = false
 
   constructor(options: ChunkerOptions) {
-    const ms = (value: number) => Math.round((value / 1000) * options.sampleRate)
+    const ms = (value: number) => msToSamples(value, options.sampleRate)
     this.sampleRate = options.sampleRate
     this.speechThreshold = options.speechThreshold ?? SPEECH_THRESHOLD
     this.minChunkSamples = ms(options.minChunkMs ?? 6000)
@@ -134,7 +134,11 @@ export function speechMs(samples: Float32Array, sampleRate: number, threshold = 
   return (speech / sampleRate) * 1000
 }
 
-function rms(frame: Float32Array): number {
+export function msToSamples(ms: number, sampleRate: number): number {
+  return Math.round((ms / 1000) * sampleRate)
+}
+
+export function rms(frame: Float32Array): number {
   let sum = 0
   for (const sample of frame) sum += sample * sample
   return frame.length ? Math.sqrt(sum / frame.length) : 0

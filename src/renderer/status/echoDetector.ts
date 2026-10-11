@@ -1,13 +1,6 @@
 import type { TranscriptSource } from '../../shared/types'
+import { msToSamples, rms } from './speechChunker'
 
-/**
- * Port of Wispr Flow's meeting echo detector: when the call plays through speakers, the microphone
- * hears it again a few hundred ms later. GCC-PHAT cross-correlation finds that delay; once it stays
- * stable, the echoed mic audio is marked so it isn't transcribed a second time as the user.
- *
- * All positions are session samples at `sampleRate`, shared by both streams, so the two captures
- * line up regardless of how their audio contexts batch frames.
- */
 export interface EchoDetectorConfig {
   sampleRate: number
   /** Analysis runs at `sampleRate / decimation`. */
@@ -20,17 +13,20 @@ export interface EchoDetectorConfig {
   /** Minimum normalized correlation peak for a window to count. */
   scoreFloor: number
   lagToleranceMs: number
+  /** How many counted windows the lock is judged over. */
   lagWindow: number
   lagStabilityMin: number
-  /** Wispr requires the mic to trail; our two capture clocks are only roughly aligned, so allow either side. */
+  /** Our two capture clocks are only roughly aligned, so the mic may lead or trail by up to this much. */
   maxAbsLagMs: number
   attackUpdates: number
   hangoverMs: number
+  /** Locked updates required after a quiet freeze before the lock is trusted again. */
+  corroborations: number
   slowAnalysisMs: number
   slowAnalysisLimit: number
 }
 
-export const ECHO_DEFAULTS: EchoDetectorConfig = {
+const ECHO_DEFAULTS: EchoDetectorConfig = {
   sampleRate: 16_000,
   decimation: 2,
   fftSize: 16_384,
@@ -43,9 +39,14 @@ export const ECHO_DEFAULTS: EchoDetectorConfig = {
   maxAbsLagMs: 500,
   attackUpdates: 3,
   hangoverMs: 2000,
+  corroborations: 2,
   slowAnalysisMs: 10,
   slowAnalysisLimit: 5,
 }
+
+/** Must cover the longest mic chunk plus how long it can be held for a decision. */
+const SEGMENT_RETENTION_MS = 60_000
+const LOWPASS_TAPS = 31
 
 export interface EchoSpan {
   start: number
@@ -61,24 +62,42 @@ export interface EchoStats {
   analyzed: number
   correlated: number
   suppressedMs: number
+  /** Mic delay behind the call at the most recent lock. */
+  lagMs: number | null
   disabled: boolean
 }
 
+/**
+ * When the call plays through speakers, the microphone hears it again a moment later. GCC-PHAT
+ * cross-correlation finds that delay; once it stays stable, the echoed mic audio is marked so it isn't
+ * transcribed a second time as the user.
+ *
+ * All positions are session samples at `sampleRate`, shared by both streams, so the two captures
+ * line up regardless of how their audio contexts batch frames.
+ */
 export class EchoDetector {
   private readonly config: EchoDetectorConfig
   private readonly windowSamples: number
   private readonly cadenceSamples: number
   private readonly maxLagSamples: number
+  private readonly hangoverSamples: number
+  private readonly retentionSamples: number
   private readonly rings: Record<TranscriptSource, SampleRing>
   private readonly fft: Fft
+  private readonly lowpass: Float64Array
   private readonly scratch: { micWindow: Float32Array; systemWindow: Float32Array; x: Float64Array; y: Float64Array }
 
   private nextAnalysisEnd: number | null = null
   private lastAnalysisEnd = Number.NEGATIVE_INFINITY
   private segments: Segment[] = []
-  private recent: { lagMs: number; score: number }[] = []
+  private prunedSuppressed = 0
+  private recentLagsMs: number[] = []
+  private lockedLagMs: number | null = null
   private suppressing = false
   private consecutiveLocked = 0
+  private corroborationsNeeded = 0
+  /** Mic audio before this is from before a quiet freeze and is left out of new windows. */
+  private freshFrom = Number.NEGATIVE_INFINITY
   private belowSince: number | null = null
   private quietStreak = 0
   private slowStreak = 0
@@ -88,14 +107,17 @@ export class EchoDetector {
 
   constructor(options: Partial<EchoDetectorConfig> = {}) {
     this.config = { ...ECHO_DEFAULTS, ...options }
-    const { sampleRate, decimation, fftSize, cadenceMs, maxAbsLagMs } = this.config
+    const { sampleRate, decimation, fftSize, cadenceMs, maxAbsLagMs, hangoverMs } = this.config
     if (fftSize <= 0 || (fftSize & (fftSize - 1)) !== 0) throw new Error(`fftSize must be a power of two, got ${fftSize}`)
     this.windowSamples = fftSize * decimation
-    this.cadenceSamples = Math.round((cadenceMs / 1000) * sampleRate)
-    this.maxLagSamples = Math.round((maxAbsLagMs / 1000) * sampleRate)
+    this.cadenceSamples = msToSamples(cadenceMs, sampleRate)
+    this.maxLagSamples = msToSamples(maxAbsLagMs, sampleRate)
+    this.hangoverSamples = msToSamples(hangoverMs, sampleRate)
+    this.retentionSamples = msToSamples(SEGMENT_RETENTION_MS, sampleRate)
     const capacity = this.windowSamples + this.maxLagSamples + 4 * this.cadenceSamples + sampleRate
     this.rings = { mic: new SampleRing(capacity), system: new SampleRing(capacity) }
     this.fft = new Fft(fftSize)
+    this.lowpass = lowpassTaps(LOWPASS_TAPS, 0.45 / decimation)
     this.scratch = {
       micWindow: new Float32Array(this.windowSamples),
       systemWindow: new Float32Array(this.windowSamples),
@@ -110,13 +132,20 @@ export class EchoDetector {
   }
 
   get stats(): EchoStats {
-    const suppressed = this.segments.reduce((n, s) => n + (s.suppressed ? s.end - s.start : 0), 0)
+    const suppressed = this.segments.reduce((n, s) => n + (s.suppressed ? s.end - s.start : 0), this.prunedSuppressed)
     return {
       analyzed: this.analyzed,
       correlated: this.correlated,
       suppressedMs: Math.round((suppressed / this.config.sampleRate) * 1000),
+      lagMs: this.lockedLagMs,
       disabled: this.disabled,
     }
+  }
+
+  /** Session sample just past the latest audio received from `source`. */
+  receivedThrough(source: TranscriptSource): number {
+    const ring = this.rings[source]
+    return ring.empty ? Number.NEGATIVE_INFINITY : ring.end
   }
 
   push(source: TranscriptSource, frame: Float32Array, start: number): void {
@@ -132,40 +161,61 @@ export class EchoDetector {
     }
   }
 
-  /** Merged echo spans overlapping `[from, to)`. */
+  /** Carries the current decision over audio received since the last analysis, e.g. when recording stops. */
+  finish(): void {
+    const end = Math.min(this.receivedThrough('mic'), this.receivedThrough('system'))
+    if (!Number.isFinite(this.lastAnalysisEnd) || end <= this.lastAnalysisEnd) return
+    const segment = this.segment(this.lastAnalysisEnd, end)
+    segment.suppressed = this.suppressing && segment.systemActive
+    this.record(segment)
+  }
+
+  /** Merged echo spans overlapping `[from, to)`; gaps of up to one analysis step are filled. */
   spans(from: number, to: number): EchoSpan[] {
     const out: EchoSpan[] = []
     for (const segment of this.segments) {
       if (!segment.suppressed || segment.end <= from || segment.start >= to) continue
       const last = out[out.length - 1]
-      if (last && last.end >= segment.start) last.end = Math.max(last.end, segment.end)
+      if (last && segment.start - last.end <= this.cadenceSamples) last.end = Math.max(last.end, segment.end)
       else out.push({ start: segment.start, end: segment.end })
     }
     return out
   }
 
-  private analyze(end: number): void {
-    const { energyFloor, scoreFloor } = this.config
-    const start = end - this.cadenceSamples
-    const segment: Segment = {
-      start,
-      end,
-      systemActive: this.rms('system', start - this.maxLagSamples, end) >= energyFloor,
-      suppressed: false,
+  private segment(start: number, end: number): Segment {
+    const systemActive = this.rings.system.rms(start - this.maxLagSamples, end) >= this.config.energyFloor
+    return { start, end, systemActive, suppressed: false }
+  }
+
+  private record(segment: Segment): void {
+    this.segments.push(segment)
+    this.lastAnalysisEnd = segment.end
+    while (this.segments[0] && this.segments[0].end < segment.end - this.retentionSamples) {
+      const old = this.segments.shift()!
+      if (old.suppressed) this.prunedSuppressed += old.end - old.start
     }
-    this.lastAnalysisEnd = end
+  }
+
+  private analyze(end: number): void {
+    const { energyFloor, scoreFloor, lagWindow } = this.config
+    const start = end - this.cadenceSamples
+    const segment = this.segment(start, end)
 
     if (this.disabled) {
-      this.segments.push(segment)
+      this.record(segment)
       return
     }
 
-    if (this.rms('mic', start, end) < energyFloor) {
+    if (this.rings.mic.rms(start, end) < energyFloor) {
       this.quietStreak += 1
       // A short dip is analyzed normally; a longer quiet freezes the decision until the mic is busy again.
       if (this.quietStreak >= 2) {
+        this.consecutiveLocked = 0
+        this.corroborationsNeeded = this.config.corroborations
+        this.recentLagsMs = []
+        this.freshFrom = end
         segment.suppressed = this.suppressing && segment.systemActive
-        this.segments.push(segment)
+        this.record(segment)
         return
       }
     } else {
@@ -176,45 +226,58 @@ export class EchoDetector {
     const { micWindow, systemWindow } = this.scratch
     this.rings.mic.read(end - this.windowSamples, micWindow)
     this.rings.system.read(end - this.windowSamples, systemWindow)
-    let score = 0
-    let lagMs = 0
+    if (this.freshFrom > end - this.windowSamples) micWindow.fill(0, 0, this.freshFrom - (end - this.windowSamples))
+    let counted = false
     if (rms(micWindow) >= energyFloor && rms(systemWindow) >= energyFloor) {
       const began = performance.now()
-      ;({ score, lagMs } = this.correlate(micWindow, systemWindow))
+      const { score, lagMs } = this.correlate(micWindow, systemWindow)
       this.noteAnalysisTime(performance.now() - began)
+      if (score >= scoreFloor) {
+        counted = true
+        this.correlated += 1
+        this.recentLagsMs.push(lagMs)
+        if (this.recentLagsMs.length > lagWindow) this.recentLagsMs.shift()
+      }
     }
-    if (score >= scoreFloor) this.correlated += 1
-    this.recent.push({ lagMs, score })
-    if (this.recent.length > this.config.lagWindow) this.recent.shift()
 
-    if (this.locked()) {
+    let locked = counted && this.locked()
+    if (locked && this.corroborationsNeeded > 0) {
+      this.corroborationsNeeded -= 1
+      locked = false
+    }
+    if (locked) {
       this.consecutiveLocked += 1
       this.belowSince = null
+      this.lockedLagMs = median(this.recentLagsMs)
       if (!this.suppressing && this.consecutiveLocked >= this.config.attackUpdates) {
         this.suppressing = true
         // The lock needs a few windows of evidence, so the echo began up to a window earlier.
-        for (const earlier of this.segments) {
-          if (earlier.start >= end - this.windowSamples && earlier.systemActive) earlier.suppressed = true
+        const reach = end - this.windowSamples
+        for (let i = this.segments.length - 1; i >= 0 && this.segments[i]!.start >= reach; i--) {
+          const earlier = this.segments[i]!
+          if (earlier.systemActive) earlier.suppressed = true
         }
       }
     } else {
       this.consecutiveLocked = 0
       if (this.suppressing) {
         this.belowSince ??= start
-        if (end - this.belowSince >= this.config.hangoverMs * (this.config.sampleRate / 1000)) {
+        if (end - this.belowSince >= this.hangoverSamples) {
           this.suppressing = false
-          for (const later of this.segments) if (later.start >= this.belowSince) later.suppressed = false
+          for (let i = this.segments.length - 1; i >= 0 && this.segments[i]!.start >= this.belowSince; i--) {
+            this.segments[i]!.suppressed = false
+          }
           this.belowSince = null
         }
       }
     }
     segment.suppressed = this.suppressing && segment.systemActive
-    this.segments.push(segment)
+    this.record(segment)
   }
 
   private locked(): boolean {
-    const { scoreFloor, lagStabilityMin, lagToleranceMs, maxAbsLagMs } = this.config
-    const lags = this.recent.filter((r) => r.score >= scoreFloor).map((r) => r.lagMs)
+    const { lagStabilityMin, lagToleranceMs, maxAbsLagMs } = this.config
+    const lags = this.recentLagsMs
     if (lags.length < lagStabilityMin) return false
     const center = median(lags)
     const within = lags.filter((lag) => Math.abs(lag - center) <= lagToleranceMs).length
@@ -223,10 +286,11 @@ export class EchoDetector {
 
   private correlate(mic: Float32Array, system: Float32Array): { score: number; lagMs: number } {
     const { x, y } = this.scratch
-    decimate(mic, this.config.decimation, x)
-    decimate(system, this.config.decimation, y)
-    const { peak, lag } = gccPhat(this.fft, x, y)
-    return { score: peak, lagMs: (lag / (this.config.sampleRate / this.config.decimation)) * 1000 }
+    const { decimation, sampleRate } = this.config
+    decimate(mic, this.lowpass, decimation, x)
+    decimate(system, this.lowpass, decimation, y)
+    const { score, lag } = gccPhat(this.fft, x, y)
+    return { score, lagMs: (lag / (sampleRate / decimation)) * 1000 }
   }
 
   private noteAnalysisTime(ms: number): void {
@@ -236,27 +300,19 @@ export class EchoDetector {
     this.suppressing = false
     console.warn(`Echo detector disabled: analysis took ${ms.toFixed(1)} ms`)
   }
-
-  private rms(source: TranscriptSource, from: number, to: number): number {
-    return this.rings[source].rms(from, to)
-  }
 }
 
 /** Zeroes the samples of `samples` (starting at session sample `start`) covered by `spans`. */
-export function silenceSpans(samples: Float32Array, start: number, spans: EchoSpan[]): number {
-  let silenced = 0
+export function silenceSpans(samples: Float32Array, start: number, spans: EchoSpan[]): void {
   for (const span of spans) {
     const from = Math.max(0, span.start - start)
     const to = Math.min(samples.length, span.end - start)
-    if (to <= from) continue
-    samples.fill(0, from, to)
-    silenced += to - from
+    if (to > from) samples.fill(0, from, to)
   }
-  return silenced
 }
 
 /** Normalized cross-correlation peak and lag of `x` against `y`; a positive lag means `x` trails `y`. */
-export function gccPhat(fft: Fft, x: Float64Array, y: Float64Array): { peak: number; lag: number } {
+export function gccPhat(fft: Fft, x: Float64Array, y: Float64Array): { score: number; lag: number } {
   const n = fft.size
   const xr = Float64Array.from(x)
   const xi = new Float64Array(n)
@@ -272,16 +328,16 @@ export function gccPhat(fft: Fft, x: Float64Array, y: Float64Array): { peak: num
     xi[k] = im / magnitude
   }
   fft.transform(xr, xi, true)
-  let peak = -1
+  let score = -1
   let index = 0
   for (let k = 0; k < n; k++) {
     const magnitude = Math.hypot(xr[k]!, xi[k]!)
-    if (magnitude > peak) {
-      peak = magnitude
+    if (magnitude > score) {
+      score = magnitude
       index = k
     }
   }
-  return { peak, lag: index <= n / 2 ? index : index - n }
+  return { score, lag: index <= n / 2 ? index : index - n }
 }
 
 /** In-place iterative radix-2 complex FFT; the inverse is scaled by 1/n. */
@@ -384,22 +440,37 @@ class SampleRing {
   }
 }
 
-function decimate(input: Float32Array, factor: number, out: Float64Array): void {
+/** Blackman-windowed sinc low-pass with unit DC gain; `cutoff` is in cycles per input sample. */
+function lowpassTaps(count: number, cutoff: number): Float64Array {
+  const taps = new Float64Array(count)
+  const middle = (count - 1) / 2
+  let sum = 0
+  for (let i = 0; i < count; i++) {
+    const t = i - middle
+    const sinc = t === 0 ? 2 * cutoff : Math.sin(2 * Math.PI * cutoff * t) / (Math.PI * t)
+    const window = 0.42 - 0.5 * Math.cos((2 * Math.PI * i) / (count - 1)) + 0.08 * Math.cos((4 * Math.PI * i) / (count - 1))
+    taps[i] = sinc * window
+    sum += taps[i]!
+  }
+  for (let i = 0; i < count; i++) taps[i] = taps[i]! / sum
+  return taps
+}
+
+/** Low-pass filters and downsamples `input` by `factor` into `out`, removing the mean. */
+function decimate(input: Float32Array, taps: Float64Array, factor: number, out: Float64Array): void {
+  const middle = (taps.length - 1) >> 1
   let mean = 0
   for (let i = 0; i < out.length; i++) {
+    const center = i * factor
+    const first = Math.max(0, middle - center)
+    const last = Math.min(taps.length, input.length - center + middle)
     let sum = 0
-    for (let j = 0; j < factor; j++) sum += input[i * factor + j]!
-    out[i] = sum / factor
-    mean += out[i]!
+    for (let k = first; k < last; k++) sum += taps[k]! * input[center + k - middle]!
+    out[i] = sum
+    mean += sum
   }
   mean /= out.length
   for (let i = 0; i < out.length; i++) out[i] = out[i]! - mean
-}
-
-function rms(samples: Float32Array): number {
-  let sum = 0
-  for (const sample of samples) sum += sample * sample
-  return samples.length ? Math.sqrt(sum / samples.length) : 0
 }
 
 function median(values: number[]): number {

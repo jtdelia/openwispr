@@ -1,12 +1,11 @@
 import type { MeetingChunk } from '../../shared/api'
 import type { TranscriptSource } from '../../shared/types'
 import { encodeWav, SAMPLE_RATE, workletUrl } from './recorder'
-import { EchoDetector, silenceSpans } from './echoDetector'
-import { MIN_SPEECH_MS, SpeechChunker, speechMs, type SpeechChunk } from './speechChunker'
+import { EchoDetector } from './echoDetector'
+import { EchoGate } from './echoGate'
+import { msToSamples, SpeechChunker, type SpeechChunk } from './speechChunker'
 
 const FLUSH_TIMEOUT_MS = 300
-/** Mic chunks wait this long past their end for echo decisions; must exceed the detector's hangover. */
-const ECHO_HOLD_MS = 3000
 
 interface Capture {
   session: number
@@ -19,12 +18,7 @@ interface Capture {
   offsetMs: number
   /** `offsetMs` in samples, so both captures share one sample clock for echo detection. */
   offsetSamples: number
-  received: number
-}
-
-interface PendingChunk {
-  capture: Capture
-  chunk: SpeechChunk
+  receivedSamples: number
 }
 
 /**
@@ -36,7 +30,7 @@ export class MeetingRecorder {
   private session: number | null = null
   private startedAt = 0
   private echo: EchoDetector | null = null
-  private pendingMic: PendingChunk[] = []
+  private gate: EchoGate | null = null
 
   constructor(private readonly onChunk: (chunk: MeetingChunk) => void) {}
 
@@ -46,6 +40,7 @@ export class MeetingRecorder {
     this.session = session
     this.startedAt = Date.now()
     this.echo = new EchoDetector({ sampleRate: SAMPLE_RATE })
+    this.gate = new EchoGate(this.echo, SAMPLE_RATE)
     const mic = await navigator.mediaDevices.getUserMedia({
       audio: {
         deviceId: deviceId ? { exact: deviceId } : undefined,
@@ -73,9 +68,10 @@ export class MeetingRecorder {
     const captures = this.captures
     this.captures = []
     await Promise.all(captures.map((capture) => this.finish(capture)))
-    this.releaseMic(true)
+    this.gate?.flush()
     if (this.echo) console.info('Meeting echo detector', this.echo.stats)
     this.echo = null
+    this.gate = null
   }
 
   cut(session: number, source: TranscriptSource): void {
@@ -100,16 +96,16 @@ export class MeetingRecorder {
       node,
       chunker: new SpeechChunker({ sampleRate: SAMPLE_RATE }),
       offsetMs,
-      offsetSamples: Math.round((offsetMs / 1000) * SAMPLE_RATE),
-      received: 0,
+      offsetSamples: msToSamples(offsetMs, SAMPLE_RATE),
+      receivedSamples: 0,
     }
     node.port.onmessage = (event: MessageEvent<Float32Array | string>) => {
       if (typeof event.data === 'string') return
-      this.echo?.push(source, event.data, capture.offsetSamples + capture.received)
-      capture.received += event.data.length
+      this.echo?.push(source, event.data, capture.offsetSamples + capture.receivedSamples)
+      capture.receivedSamples += event.data.length
       const chunk = capture.chunker.push(event.data)
       if (chunk) this.emit(capture, chunk)
-      this.releaseMic(false)
+      this.releaseDecidedMic(capture)
     }
     context.createMediaStreamSource(stream).connect(node)
     node.connect(context.destination)
@@ -137,35 +133,20 @@ export class MeetingRecorder {
   }
 
   private emit(capture: Capture, chunk: SpeechChunk): void {
-    if (capture.source === 'mic') {
-      this.pendingMic.push({ capture, chunk })
-      this.releaseMic(false)
+    if (capture.source === 'mic' && this.gate) {
+      const start = capture.offsetSamples + chunk.startSample
+      const end = capture.offsetSamples + chunk.endSample
+      this.gate.hold({ start, end, samples: chunk.samples, send: () => this.send(capture, chunk) })
+      this.releaseDecidedMic(capture)
     } else {
       this.send(capture, chunk)
     }
   }
 
-  /** Sends held mic chunks, in order, once the echo detector has decided on them. */
-  private releaseMic(all: boolean): void {
-    const hold = (ECHO_HOLD_MS / 1000) * SAMPLE_RATE
-    const mic = this.captures.find((c) => c.source === 'mic')
-    const hasSystem = this.captures.some((c) => c.source === 'system')
-    while (this.pendingMic.length > 0) {
-      const { capture, chunk } = this.pendingMic[0]!
-      const start = capture.offsetSamples + chunk.startSample
-      const end = capture.offsetSamples + chunk.endSample
-      const micEnd = mic ? mic.offsetSamples + mic.received : Number.POSITIVE_INFINITY
-      const decided = (this.echo?.analyzedThrough ?? Number.POSITIVE_INFINITY) >= end + hold
-      // A stalled system stream must not hold the user's speech forever.
-      if (!all && hasSystem && !decided && micEnd < end + 2 * hold) return
-      this.pendingMic.shift()
-      const spans = this.echo?.spans(start, end) ?? []
-      if (spans.length > 0) {
-        silenceSpans(chunk.samples, start, spans)
-        if (speechMs(chunk.samples, SAMPLE_RATE) < MIN_SPEECH_MS) continue
-      }
-      this.send(capture, chunk)
-    }
+  /** While stopping, held chunks wait for `stop` to flush them after every capture's last frames. */
+  private releaseDecidedMic(capture: Capture): void {
+    if (capture.session !== this.session) return
+    this.gate?.releaseDecided(this.captures.some((c) => c.source === 'system'))
   }
 
   private send(capture: Capture, chunk: SpeechChunk): void {

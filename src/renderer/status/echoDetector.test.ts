@@ -1,37 +1,11 @@
 import { describe, expect, it } from 'vitest'
-import { EchoDetector, Fft, gccPhat, silenceSpans } from './echoDetector'
+import { EchoDetector, Fft, gccPhat, silenceSpans, type EchoDetectorConfig } from './echoDetector'
+import { delayed, mix, noise, RATE } from './testAudio'
 
-const RATE = 16_000
 const FRAME = 1024
 
-/** Mulberry32 white noise; a plain LCG's low bits correlate with shifted copies of themselves. */
-function noise(seconds: number, amplitude: number, seed: number): Float32Array {
-  let state = seed
-  const out = new Float32Array(Math.round(seconds * RATE))
-  for (let i = 0; i < out.length; i++) {
-    state = (state + 0x6d2b79f5) | 0
-    let t = Math.imul(state ^ (state >>> 15), 1 | state)
-    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t
-    out[i] = ((((t ^ (t >>> 14)) >>> 0) / 2 ** 32) * 2 - 1) * amplitude
-  }
-  return out
-}
-
-function delayed(source: Float32Array, delayMs: number, gain: number): Float32Array {
-  const shift = Math.round((delayMs / 1000) * RATE)
-  const out = new Float32Array(source.length)
-  for (let i = shift; i < source.length; i++) out[i] = source[i - shift]! * gain
-  return out
-}
-
-function mix(...parts: Float32Array[]): Float32Array {
-  const out = new Float32Array(parts[0]!.length)
-  for (const part of parts) for (let i = 0; i < out.length; i++) out[i] = out[i]! + part[i]!
-  return out
-}
-
-function run(mic: Float32Array, system: Float32Array): EchoDetector {
-  const detector = new EchoDetector()
+function run(mic: Float32Array, system: Float32Array, options: Partial<EchoDetectorConfig> = {}): EchoDetector {
+  const detector = new EchoDetector(options)
   for (let at = 0; at < mic.length; at += FRAME) {
     detector.push('system', system.subarray(at, at + FRAME), at)
     detector.push('mic', mic.subarray(at, at + FRAME), at)
@@ -49,9 +23,9 @@ describe('gccPhat', () => {
     const y = Float64Array.from(noise(1024 / RATE, 1, 7))
     const x = new Float64Array(1024)
     for (let i = 40; i < 1024; i++) x[i] = y[i - 40]! * 0.5
-    const { peak, lag } = gccPhat(fft, x, y)
+    const { score, lag } = gccPhat(fft, x, y)
     expect(lag).toBe(40)
-    expect(peak).toBeGreaterThan(0.5)
+    expect(score).toBeGreaterThan(0.5)
   })
 })
 
@@ -61,6 +35,15 @@ describe('EchoDetector', () => {
     const mic = mix(delayed(system, 120, 0.3), noise(10, 0.001, 2))
     const detector = run(mic, system)
     expect(seconds(detector, 2, 9)).toBeGreaterThan(6)
+    expect(detector.stats.lagMs).toBeCloseTo(120, 0)
+  })
+
+  it('keeps marking through short pauses in the call', () => {
+    const system = noise(10, 0.1, 9)
+    for (let at = 2; at < 10; at += 1.5) system.fill(0, Math.round(at * RATE), Math.round((at + 0.3) * RATE))
+    const mic = mix(delayed(system, 120, 0.3), noise(10, 0.001, 10))
+    const detector = run(mic, system)
+    expect(seconds(detector, 3, 9)).toBeGreaterThan(5)
   })
 
   it('leaves independent speech on both sides alone', () => {
@@ -79,6 +62,41 @@ describe('EchoDetector', () => {
     expect(seconds(detector, 7, 10)).toBe(0)
   })
 
+  it('lets go after a quiet freeze when the mic stops hearing the call', () => {
+    const call = noise(10, 0.1, 11)
+    const echo = delayed(call, 120, 0.3)
+    echo.fill(0, 4 * RATE)
+    const reply = noise(10, 0.1, 12)
+    reply.fill(0, 0, 5 * RATE)
+    const detector = run(mix(echo, reply), call)
+    expect(seconds(detector, 2, 4)).toBeGreaterThan(1.5)
+    expect(seconds(detector, 5.5, 10)).toBe(0)
+  })
+
+  it('picks the echo back up after the call pauses', () => {
+    const call = noise(12, 0.1, 15)
+    call.fill(0, 4 * RATE, 5 * RATE)
+    const mic = mix(delayed(call, 120, 0.3), noise(12, 0.001, 16))
+    const detector = run(mic, call)
+    expect(seconds(detector, 6.5, 11)).toBeGreaterThan(4)
+  })
+
+  it('stops deciding once analysis is too slow', () => {
+    const system = noise(10, 0.1, 13)
+    const detector = run(delayed(system, 120, 0.3), system, { slowAnalysisMs: -1 })
+    expect(detector.stats.disabled).toBe(true)
+    expect(detector.spans(0, 10 * RATE)).toEqual([])
+  })
+
+  it('carries an ongoing echo over the unanalyzed tail', () => {
+    const system = noise(6.1, 0.1, 14)
+    const detector = run(delayed(system, 120, 0.3), system)
+    const before = detector.analyzedThrough
+    detector.finish()
+    expect(detector.analyzedThrough).toBeGreaterThan(before)
+    expect(seconds(detector, before / RATE, detector.analyzedThrough / RATE)).toBeCloseTo((detector.analyzedThrough - before) / RATE, 3)
+  })
+
   it('does nothing until both streams are present', () => {
     const detector = new EchoDetector()
     detector.push('mic', noise(3, 0.1, 8), 0)
@@ -89,7 +107,7 @@ describe('EchoDetector', () => {
 describe('silenceSpans', () => {
   it('zeroes only the covered samples', () => {
     const samples = new Float32Array(10).fill(1)
-    expect(silenceSpans(samples, 100, [{ start: 98, end: 102 }, { start: 108, end: 120 }])).toBe(4)
+    silenceSpans(samples, 100, [{ start: 98, end: 102 }, { start: 108, end: 120 }])
     expect(Array.from(samples)).toEqual([0, 0, 1, 1, 1, 1, 1, 1, 0, 0])
   })
 })
