@@ -287,7 +287,8 @@ export class NotetakerController {
     if (credit?.clear) memory.self.heardOnCall(credit.name)
     const shown = credit?.name ?? null
     const voice = part.speaker === null ? undefined : voices.get(part.speaker)
-    const named = voice === undefined ? shown : (memory.identities.resolve(voiceSpeaker(voice), shown, from) ?? shown)
+    const observed = credit?.clear ? credit.name : null
+    const named = voice === undefined ? shown : (memory.identities.resolve(voiceSpeaker(voice), observed, from) ?? shown)
     if (named) memory.lastCallSpeaker = named
     if (named) return appSpeaker(named)
     return voice === undefined ? null : voiceSpeaker(voice)
