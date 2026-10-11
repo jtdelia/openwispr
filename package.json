@@ -17,6 +17,7 @@
     "native:build": "npm run helper:build && npm run models:build",
     "models:smoke": "node scripts/smoke-models.mjs",
     "models:smoke-summary": "vite-node scripts/smoke-summary.ts --",
+    "models:check-repo": "vite-node scripts/check-hub-repo.ts --",
     "typecheck": "tsc --noEmit -p tsconfig.node.json && tsc --noEmit -p tsconfig.web.json",
     "test": "vitest run --dir src"
   },

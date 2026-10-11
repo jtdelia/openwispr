@@ -243,6 +243,7 @@ describe('Checking a WhisperKit repo', () => {
     const sizeBytes = 3 * MLMODEL.length + 5000 + configBytes + 2 + 12 + 2
     expect(check).toEqual({
       kind: 'compatible',
+      oversized: false,
       summary: 'WhisperKit (Core ML), tokenizer from openai/whisper-small',
       model: {
         id: 'hf-argmaxinc--whisperkit-coreml--openai_whisper-small',
@@ -302,6 +303,7 @@ describe('Checking a WhisperKit repo', () => {
 
     expect(check).toMatchObject({
       kind: 'compatible',
+      oversized: false,
       summary: 'WhisperKit (Core ML), tokenizer from openai/whisper-base.en',
       model: { languages: 'English', languageCodes: ['en'] },
     })
@@ -344,6 +346,7 @@ describe('Checking a FluidAudio repo', () => {
     const sizeBytes = 4 * MLMODEL.length + 5000 + 13
     expect(check).toEqual({
       kind: 'compatible',
+      oversized: false,
       summary: 'Parakeet TDT v3 (FluidAudio, Core ML)',
       model: {
         id: 'hf-someone--parakeet-tdt-0.6b-v3-coreml',
@@ -386,6 +389,7 @@ describe('Checking an MLX repo', () => {
 
     expect(check).toEqual({
       kind: 'compatible',
+      oversized: false,
       summary: 'MLX qwen3_5, 4-bit',
       model: {
         id: 'hf-mlx-community--Qwen3.5-4B-4bit',

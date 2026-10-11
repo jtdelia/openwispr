@@ -128,7 +128,7 @@ export class Models extends EventEmitter<{ progress: [ModelProgress] }> {
 
   /** Recommended models and the ones the user added, with their download state and disk usage. */
   async library(): Promise<ModelLibrary> {
-    const physicalMemoryBytes = this.deps.physicalMemoryBytes ?? totalmem()
+    const physicalMemoryBytes = this.physicalMemoryBytes()
     const status = async (model: ModelEntry, userAdded: boolean): Promise<ModelStatus> => ({
       model,
       recommended: !userAdded,
@@ -168,8 +168,10 @@ export class Models extends EventEmitter<{ progress: [ModelProgress] }> {
   }
 
   /** Checks a pasted Hugging Face repo id or URL without downloading any weights. */
-  checkRepo(input: string): Promise<RepoCheck> {
-    return checkHubRepo(this.deps.fetch, input)
+  async checkRepo(input: string): Promise<RepoCheck> {
+    const check = await checkHubRepo(this.deps.fetch, input)
+    if (check.kind !== 'compatible') return check
+    return { ...check, oversized: check.model.memoryBytes > this.physicalMemoryBytes() * MEMORY_SHARE }
   }
 
   /** Downloads a model `checkRepo` accepted; it's listed as added by the user, and resumes like a Recommended one. */
@@ -438,6 +440,10 @@ export class Models extends EventEmitter<{ progress: [ModelProgress] }> {
         console.warn('[models] preparing a downloaded model failed', error),
       )
     }
+  }
+
+  private physicalMemoryBytes(): number {
+    return this.deps.physicalMemoryBytes ?? totalmem()
   }
 
   private libraryChanged(): void {

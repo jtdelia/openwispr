@@ -17,7 +17,7 @@ import type {
   Stats,
   TranscriptSource,
 } from './types'
-import type { ModelLibrary } from './modelLibrary'
+import type { ModelLibrary, RepoCheck } from './modelLibrary'
 
 export type DataTopic =
   | 'settings'
@@ -75,6 +75,10 @@ export interface OpenWisprApi {
   cancelDownload(id: string): Promise<void>
   /** Resolves to the bytes freed. */
   removeModel(id: string): Promise<number>
+  /** Checks a pasted Hugging Face repo id or URL without downloading it. */
+  checkHubRepo(input: string): Promise<RepoCheck>
+  /** Checks the repo again and, when compatible, starts downloading it in the background as a user-added model. */
+  addHubModel(input: string): Promise<RepoCheck>
   getHistory(): Promise<HistoryEntry[]>
   deleteHistoryEntry(id: string): Promise<void>
   clearHistory(): Promise<void>
@@ -126,6 +130,8 @@ export const Channel = {
   downloadModel: 'models:download',
   cancelDownload: 'models:cancel-download',
   removeModel: 'models:remove',
+  checkHubRepo: 'models:check-hub-repo',
+  addHubModel: 'models:add-hub-model',
   getHistory: 'history:get',
   deleteHistoryEntry: 'history:delete',
   clearHistory: 'history:clear',

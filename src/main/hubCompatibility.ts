@@ -40,6 +40,11 @@ const CORE_ML_MEMORY_FACTOR = 1.7
 const MLX_TOKENIZER = ['tokenizer.json', 'tokenizer_config.json']
 const FIND_MLX = 'Look for an MLX version, often from mlx-community'
 
+/** A `RepoCheck` before `Models` weighs a compatible model against this Mac's memory. */
+export type HubRepoCheck =
+  | Exclude<RepoCheck, { kind: 'compatible' }>
+  | Omit<Extract<RepoCheck, { kind: 'compatible' }>, 'oversized'>
+
 export interface RepoReference {
   repo: string
   revision?: string
@@ -67,7 +72,7 @@ export function parseRepoReference(input: string): RepoReference | null {
 }
 
 /** Whether OpenWispr can run the model in a pasted repo, and the entry to download it with if so. */
-export async function checkHubRepo(fetch: Fetch, input: string): Promise<RepoCheck> {
+export async function checkHubRepo(fetch: Fetch, input: string): Promise<HubRepoCheck> {
   const ref = parseRepoReference(input)
   if (!ref) {
     return {
@@ -129,7 +134,7 @@ interface Listed extends HubFile {
   rel: string
 }
 
-async function classify(fetch: Fetch, ref: Pinned, info: RepoInfo, listed: HubFile[]): Promise<RepoCheck> {
+async function classify(fetch: Fetch, ref: Pinned, info: RepoInfo, listed: HubFile[]): Promise<HubRepoCheck> {
   const prefix = ref.folder ? `${ref.folder}/` : ''
   const files: Listed[] = listed
     .filter((file) => file.path.startsWith(prefix))
@@ -168,7 +173,7 @@ function speechFolders(files: Listed[]): string[] {
   return [...new Set(files.map((f) => f.rel.match(marker)?.[1]).filter((folder) => folder !== undefined))].sort()
 }
 
-async function whisperKit(fetch: Fetch, ref: Pinned, files: Listed[]): Promise<RepoCheck> {
+async function whisperKit(fetch: Fetch, ref: Pinned, files: Listed[]): Promise<HubRepoCheck> {
   const has = (rel: string) => files.some((f) => f.rel === rel)
   const missing = [
     ...WHISPERKIT_MODELS.map((m) => `${m}.mlmodelc`).filter((dir) => !has(`${dir}/coremldata.bin`)),
@@ -244,7 +249,7 @@ function whisperSpeed(sizeBytes: number): SpeedTier {
   return 'slow'
 }
 
-function fluidAudio(ref: Pinned, files: Listed[]): RepoCheck {
+function fluidAudio(ref: Pinned, files: Listed[]): HubRepoCheck {
   const dirs = PARAKEET_MODELS.map((m) => `${m}.mlmodelc`)
   const missing = [
     ...dirs.filter((dir) => !files.some((f) => f.rel === `${dir}/coremldata.bin`)),
@@ -270,7 +275,7 @@ function fluidAudio(ref: Pinned, files: Listed[]): RepoCheck {
   }
 }
 
-async function mlx(fetch: Fetch, ref: Pinned, info: RepoInfo, files: Listed[]): Promise<RepoCheck> {
+async function mlx(fetch: Fetch, ref: Pinned, info: RepoInfo, files: Listed[]): Promise<HubRepoCheck> {
   const top = files.filter((f) => !f.rel.includes('/'))
   const has = (rel: string) => top.some((f) => f.rel === rel)
   const read = (rel: string) => readRepoFile(fetch, { repo: ref.repo, revision: ref.revision, path: path(ref, rel) })

@@ -89,7 +89,8 @@ export type RepoRejection =
 
 /** The compatibility check of a pasted repo id or URL, made before anything is downloaded. */
 export type RepoCheck =
-  | { kind: 'compatible'; model: ModelEntry; summary: string }
+  /** `oversized` as in `ModelStatus`. */
+  | { kind: 'compatible'; model: ModelEntry; summary: string; oversized: boolean }
   /** A repo holding several speech-to-text models, like WhisperKit's; one folder must be chosen. */
   | { kind: 'severalModels'; repo: string; revision: string; folders: string[]; message: string }
   | { kind: 'rejected'; reason: RepoRejection; message: string }

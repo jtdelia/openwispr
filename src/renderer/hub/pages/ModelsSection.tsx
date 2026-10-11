@@ -1,5 +1,13 @@
 import { useState } from 'react'
-import { isRunnable, MODEL_TASKS, type ModelLibrary, type ModelStatus, type ModelTask, type SpeedTier } from '../../../shared/modelLibrary'
+import {
+  isRunnable,
+  MODEL_TASKS,
+  type ModelLibrary,
+  type ModelStatus,
+  type ModelTask,
+  type RepoCheck,
+  type SpeedTier,
+} from '../../../shared/modelLibrary'
 import { MODEL_ROLES, type ModelRole, type PublicSettings } from '../../../shared/types'
 import { formatBytes } from '../format'
 
@@ -44,7 +52,7 @@ export function ModelsSection({ library, settings }: { library: ModelLibrary; se
     <section className="card settings-section">
       <h2>Built-in models</h2>
       <p className="muted small">
-        Recommended models run on this Mac and are downloaded from Hugging Face. Downloaded speech-to-text and chat
+        Recommended models, and any you add, run on this Mac and are downloaded from Hugging Face. Downloaded speech-to-text and chat
         models can be selected once installed; vision models become selectable once Lens ships.
       </p>
       {MODEL_TASKS.map((task) => (
@@ -62,12 +70,130 @@ export function ModelsSection({ library, settings }: { library: ModelLibrary; se
             ))}
         </div>
       ))}
+      <AddFromHub />
       <p className="muted small">
         Downloaded models use {formatBytes(library.diskUsageBytes)} on disk.
         {notice && ` ${notice}`}
       </p>
     </section>
   )
+}
+
+/** Checks a pasted repo id or URL before anything is downloaded, then downloads it as a user-added model. */
+function AddFromHub() {
+  const [input, setInput] = useState('')
+  const [checked, setChecked] = useState<{ input: string; check: RepoCheck } | null>(null)
+  const [busy, setBusy] = useState(false)
+  const [notice, setNotice] = useState<string | null>(null)
+
+  const failed = (error: unknown): RepoCheck => ({
+    kind: 'rejected',
+    reason: 'hubFailed',
+    message: error instanceof Error ? error.message : String(error),
+  })
+  const check = (value: string) => {
+    if (!value.trim()) return
+    setInput(value)
+    setNotice(null)
+    setChecked(null)
+    setBusy(true)
+    void api
+      .checkHubRepo(value)
+      .catch(failed)
+      .then((result) => setChecked({ input: value, check: result }))
+      .finally(() => setBusy(false))
+  }
+  const add = (value: string) => {
+    setBusy(true)
+    void api
+      .addHubModel(value)
+      .catch(failed)
+      .then((result) => {
+        if (result.kind !== 'compatible') return setChecked({ input: value, check: result })
+        setChecked(null)
+        setInput('')
+        setNotice(`Downloading ${result.model.name}; it’s listed under ${TASK_TITLES[result.model.task]} as added by you.`)
+      })
+      .finally(() => setBusy(false))
+  }
+
+  return (
+    <div className="model-group">
+      <h3 className="section-title">Add from Hugging Face</h3>
+      <div className="setting-row">
+        <div>
+          <div className="muted small">
+            Paste a repo id or URL. OpenWispr checks that it can run the model before downloading anything: MLX chat and
+            vision models, and WhisperKit or Parakeet speech-to-text models.
+          </div>
+          {checked && <CheckResult check={checked.check} busy={busy} onAdd={() => add(checked.input)} onCheck={check} />}
+          {notice && <p className="muted small">{notice}</p>}
+        </div>
+        <div className="setting-control model-actions">
+          <input
+            value={input}
+            placeholder="mlx-community/Qwen3-4B-Instruct-2507-4bit"
+            onChange={(e) => setInput(e.target.value)}
+            onKeyDown={(e) => e.key === 'Enter' && check(input)}
+          />
+          <button className="button" disabled={busy || !input.trim()} onClick={() => check(input)}>
+            {busy && !checked ? 'Checking…' : 'Check'}
+          </button>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+function CheckResult(props: { check: RepoCheck; busy: boolean; onAdd: () => void; onCheck: (input: string) => void }) {
+  const { check } = props
+  switch (check.kind) {
+    case 'compatible': {
+      const { model } = check
+      return (
+        <div className="model-check">
+          <div className="setting-title">
+            {model.name}
+            <span className="badge ok">Compatible</span>
+            {check.oversized && <span className="badge warn">Needs more memory than this Mac can spare</span>}
+          </div>
+          <div className="muted small">
+            {TASK_TITLES[model.task]} · {check.summary} · {formatBytes(model.sizeBytes)} download · about{' '}
+            {formatBytes(model.memoryBytes)} memory · {SPEED_LABELS[model.speed]} · {model.languages}
+          </div>
+          {!isRunnable(model) && <p className="muted small">It can be downloaded now and selected once Lens ships.</p>}
+          <button className="button" disabled={props.busy} onClick={props.onAdd}>
+            Download
+          </button>
+        </div>
+      )
+    }
+    case 'severalModels':
+      return (
+        <div className="model-check">
+          <p className="small">{check.message}:</p>
+          <select
+            defaultValue=""
+            onChange={(e) => props.onCheck(`https://huggingface.co/${check.repo}/tree/${check.revision}/${e.target.value}`)}
+          >
+            <option value="" disabled>
+              Choose a model folder
+            </option>
+            {check.folders.map((folder) => (
+              <option key={folder} value={folder}>
+                {folder}
+              </option>
+            ))}
+          </select>
+        </div>
+      )
+    case 'rejected':
+      return <p className="error-text small">{check.message}.</p>
+    default: {
+      const unreachable: never = check
+      throw new Error(`unhandled repo check ${JSON.stringify(unreachable)}`)
+    }
+  }
 }
 
 function ModelRow(props: { status: ModelStatus; selectedFor: ModelRole | null; onRemove: () => void }) {
