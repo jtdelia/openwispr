@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 import { comboLabel, MODIFIER_KEYS } from '../../../shared/keycodes'
-import { isRunnable, type ModelLibrary, type ModelStatus } from '../../../shared/modelLibrary'
+import { isRunnable, offeredModel, type ModelEngine, type ModelLibrary, type ModelStatus } from '../../../shared/modelLibrary'
 import { microphoneHelp } from '../../../shared/permissions'
 import {
   APPLE_SELECTION,
@@ -220,7 +220,7 @@ function ProviderSection({ settings, library }: { settings: PublicSettings; libr
               : undefined
           }
         />
-        {isAppleChat && <AppleChatStatus />}
+        {isAppleChat && <AppleChatStatus library={library} />}
         {chat.kind === 'builtIn' && !isAppleChat && <DownloadedChatStatus modelId={chat.modelId} />}
       </section>
     </>
@@ -393,22 +393,16 @@ function DownloadedModel({ role, status }: { role: ModelRole; status: ModelStatu
 }
 
 /**
- * The Whisper model to offer for a language the selected model lacks: an installed one, or else the first
- * Recommended one this Mac has the memory for.
+ * One click to switch `role` to a downloaded model, downloading it first if needed; the selection row
+ * then shows the download, and the role uses the model once it's installed.
  */
-function whisperOffer(library: ModelLibrary | null): ModelStatus | null {
-  const whisper = (library?.models ?? []).filter((s) => s.model.task === 'speechToText' && s.model.engine === 'whisperKit')
-  return whisper.find((s) => s.state.kind === 'installed') ?? whisper.find((s) => s.recommended && !s.oversized) ?? null
-}
-
-/** One click to switch to a Whisper model, downloading it first if needed. */
-function WhisperOffer({ library }: { library: ModelLibrary | null }) {
-  const offer = whisperOffer(library)
+function ModelOffer({ library, role, engine }: { library: ModelLibrary | null; role: ModelRole; engine?: ModelEngine }) {
+  const offer = offeredModel(library?.models ?? [], role, engine)
   if (!offer) return null
   const { model, state } = offer
   const select = () => {
     if (state.kind !== 'installed') void api.downloadModel(model.id)
-    update({ speechToText: { kind: 'builtIn', modelId: model.id } })
+    update({ [role]: { kind: 'builtIn', modelId: model.id } })
   }
   return (
     <button className="button" onClick={select}>
@@ -479,7 +473,7 @@ function AppleSpeechStatus({ language, library }: { language: string; library: M
           Apple’s speech-to-text doesn’t support {languageName(language)}. On this Mac it supports{' '}
           {supported.join(', ')}. Choose one of these, use a Whisper model, or use an Endpoint for this language.
         </p>
-        <WhisperOffer library={library} />
+        <ModelOffer library={library} role="speechToText" engine="whisperKit" />
       </div>
     )
   }
@@ -493,7 +487,7 @@ function AppleSpeechStatus({ language, library }: { language: string; library: M
 }
 
 /** Whether Apple Intelligence is on, checked again when the user comes back from System Settings. */
-function AppleChatStatus() {
+function AppleChatStatus({ library }: { library: ModelLibrary | null }) {
   const [status, setStatus] = useState<BuiltInStatus['appleChat'] | { error: string } | null>(null)
 
   useEffect(() => {
@@ -517,20 +511,23 @@ function AppleChatStatus() {
     return <p className="muted small">Reads up to {status.contextSize} tokens per request on this Mac.</p>
   }
   return (
-    <p className="error-text small">
-      {status.reason}, so dictations are inserted without Cleanup and meetings get no title or summary.{' '}
-      {status.fix === 'turnOnAppleIntelligence' && (
-        <>
-          Turn it on in{' '}
-          <a href={APPLE_INTELLIGENCE_SETTINGS} target="_blank" rel="noreferrer">
-            System Settings → Apple Intelligence &amp; Siri
-          </a>
-          , or use an Endpoint.{' '}
-        </>
-      )}
-      {status.fix === 'wait' && 'It’s usable once the download finishes. '}
-      You can also download a chat model under Built-in models.
-    </p>
+    <div className="setting-row">
+      <p className="error-text small">
+        {status.reason}, so dictations are inserted without Cleanup and meetings get no title or summary.{' '}
+        {status.fix === 'turnOnAppleIntelligence' && (
+          <>
+            Turn it on in{' '}
+            <a href={APPLE_INTELLIGENCE_SETTINGS} target="_blank" rel="noreferrer">
+              System Settings → Apple Intelligence &amp; Siri
+            </a>
+            , or use an Endpoint.{' '}
+          </>
+        )}
+        {status.fix === 'wait' && 'It’s usable once the download finishes. '}
+        You can also use a chat model downloaded to this Mac.
+      </p>
+      <ModelOffer library={library} role="chat" />
+    </div>
   )
 }
 
@@ -575,7 +572,7 @@ function DownloadedSpeechStatus({ modelId, language, library }: { modelId: strin
         {status.name} doesn’t support {languageName(language)}. It supports {status.languages.map(languageName).join(', ')}.
         Choose one of these, or use a Whisper model or an Endpoint for this language.
       </p>
-      <WhisperOffer library={library} />
+      <ModelOffer library={library} role="speechToText" engine="whisperKit" />
     </div>
   )
 }

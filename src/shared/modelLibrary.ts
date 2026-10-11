@@ -73,6 +73,15 @@ export interface ModelStatus {
 }
 
 /**
+ * The model to offer in one click for `task` (optionally of one `engine`): an installed one the model
+ * process can run, or else the first Recommended one this Mac has the memory for.
+ */
+export function offeredModel(models: ModelStatus[], task: ModelRole, engine?: ModelEngine): ModelStatus | null {
+  const candidates = models.filter((s) => s.model.task === task && isRunnable(s.model) && (!engine || s.model.engine === engine))
+  return candidates.find((s) => s.state.kind === 'installed') ?? candidates.find((s) => s.recommended && !s.oversized) ?? null
+}
+
+/**
  * Why a Hugging Face repo can't be added. Without an account, Hugging Face answers a private repo exactly
  * like a missing one, so the two share `notFoundOrPrivate`.
  */
