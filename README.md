@@ -99,9 +99,9 @@ If `fn` opens the emoji picker, set System Settings → Keyboard → "Press 🌐
 
 ## Not implemented (yet)
 
-Packaging and signing (the helper needs to ship in `Contents/Resources/openwispr-helper`), streaming
-transcription, Command/Lens modes, plain notes (scratchpad), calendar integration and automatic meeting
-detection, voice diarization without an OpenAI diarizing model, team sync, and Windows support.
+See [`docs/roadmap.md`](docs/roadmap.md): packaging and built-in local models come first, then Command and
+the other dictation features, plain notes, the remaining Notetaker features, and a local MCP server.
+Accounts, sync, teams and Windows are out of scope ([ADR 0001](docs/adr/0001-local-first-single-user.md)).
 
 ## Data
 
