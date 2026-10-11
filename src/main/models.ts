@@ -1,6 +1,7 @@
 import { EventEmitter } from 'node:events'
 import { totalmem } from 'node:os'
 import {
+  APPLE_MODEL_ID,
   isLocalEndpoint,
   MODEL_ROLES,
   type BuiltInStatus,
@@ -49,7 +50,6 @@ export interface ModelsDeps {
   retryDelayMs?: number
 }
 
-const APPLE = 'apple'
 const ROLE_NAMES: Record<ModelRole, string> = { speechToText: 'speech-to-text', chat: 'chat' }
 const BUILT_IN_UNAVAILABLE = 'Built-in models are not available yet'
 const TEST_TIMEOUT_MS = 20_000
@@ -244,16 +244,16 @@ export class Models extends EventEmitter<{ progress: [ModelProgress] }> {
     const { language } = this.deps.settings()
     const speech = this.builtInSpeech()
     const speechModel = speech !== null && 'model' in speech ? speech.model : null
-    if (speechModel !== null && speechModel !== APPLE) {
+    if (speechModel !== null && speechModel !== APPLE_MODEL_ID) {
       this.prepare('speechToText', speechModel).catch((error: unknown) => console.warn('[models] warm-up failed', error))
     }
     const chat = this.builtInChatModel()
-    if (chat !== null && chat !== APPLE) {
+    if (chat !== null && chat !== APPLE_MODEL_ID) {
       this.prepare('chat', chat).catch((error: unknown) => console.warn('[models] warm-up failed', error))
     }
     const refs: ModelRef[] = [
-      ...(speechModel === APPLE ? [{ role: 'speechToText' as const, id: APPLE, language }] : []),
-      ...(chat === APPLE ? [{ role: 'chat' as const, id: APPLE, language }] : []),
+      ...(speechModel === APPLE_MODEL_ID ? [{ role: 'speechToText' as const, id: APPLE_MODEL_ID, language }] : []),
+      ...(chat === APPLE_MODEL_ID ? [{ role: 'chat' as const, id: APPLE_MODEL_ID, language }] : []),
     ]
     if (refs.length === 0) return
     this.process
@@ -279,13 +279,13 @@ export class Models extends EventEmitter<{ progress: [ModelProgress] }> {
   async status(): Promise<BuiltInStatus> {
     const { language } = this.deps.settings()
     const speech = this.builtInSpeech()
-    const model = speech !== null && 'model' in speech && speech.model !== APPLE ? speech.model : null
+    const model = speech !== null && 'model' in speech && speech.model !== APPLE_MODEL_ID ? speech.model : null
     const chat = this.builtInChatModel()
     return this.process.request({
       type: 'status',
       language,
       ...(model !== null && { speechToText: model }),
-      ...(chat !== null && chat !== APPLE && { chat }),
+      ...(chat !== null && chat !== APPLE_MODEL_ID && { chat }),
     })
   }
 
@@ -294,7 +294,7 @@ export class Models extends EventEmitter<{ progress: [ModelProgress] }> {
     const chat = this.builtInChatModel()
     if (chat === null) return null
     const status = await this.status()
-    return chat === APPLE ? status.appleChat.contextSize : (status.chat?.contextSize ?? null)
+    return chat === APPLE_MODEL_ID ? status.appleChat.contextSize : (status.chat?.contextSize ?? null)
   }
 
   /** Stops the model process; the next Built-in request starts it again. */
@@ -391,7 +391,7 @@ export class Models extends EventEmitter<{ progress: [ModelProgress] }> {
     const selection = this.deps.settings()[role]
     if (selection.kind !== 'builtIn') return null
     const id = selection.modelId
-    if (id === APPLE) return { model: APPLE }
+    if (id === APPLE_MODEL_ID) return { model: APPLE_MODEL_ID }
     const manifest = this.installed.get(id)
     const roleName = ROLE_NAMES[role]
     if (!manifest) {

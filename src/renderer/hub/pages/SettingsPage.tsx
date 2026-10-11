@@ -3,7 +3,9 @@ import { comboLabel, MODIFIER_KEYS } from '../../../shared/keycodes'
 import { isRunnable, type ModelLibrary, type ModelStatus } from '../../../shared/modelLibrary'
 import { microphoneHelp } from '../../../shared/permissions'
 import {
+  APPLE_SELECTION,
   DEFAULT_SHORTCUTS,
+  isAppleSelection,
   SHORTCUT_LABELS,
   type BuiltInStatus,
   type EndpointTestResult,
@@ -144,8 +146,8 @@ function modelOptions(library: ModelLibrary | null, role: ModelRole, selection: 
 
 function ProviderSection({ settings, library }: { settings: PublicSettings; library: ModelLibrary | null }) {
   const { speechToText, chat, cleanup } = settings
-  const isAppleSpeech = speechToText.kind === 'builtIn' && speechToText.modelId === 'apple'
-  const isAppleChat = chat.kind === 'builtIn' && chat.modelId === 'apple'
+  const isAppleSpeech = isAppleSelection(speechToText)
+  const isAppleChat = isAppleSelection(chat)
   const applySpeechPreset = (label: string) => {
     if (selectBuiltIn('speechToText', label)) return
     const preset = PRESETS.find((p) => p.label === label)
@@ -228,7 +230,7 @@ function ProviderSection({ settings, library }: { settings: PublicSettings; libr
 /** Selects Apple or a downloaded model when `label` is one of their options. */
 function selectBuiltIn(role: ModelRole, label: string): boolean {
   if (label === APPLE_OPTION) {
-    update({ [role]: { kind: 'builtIn', modelId: 'apple' } })
+    update({ [role]: APPLE_SELECTION })
     return true
   }
   if (label.startsWith(MODEL_OPTION_PREFIX)) {
@@ -240,7 +242,7 @@ function selectBuiltIn(role: ModelRole, label: string): boolean {
 
 function activePreset(presets: Preset[], selection: PublicModelSelection): string {
   if (selection.kind === 'builtIn') {
-    return selection.modelId === 'apple' ? APPLE_OPTION : `${MODEL_OPTION_PREFIX}${selection.modelId}`
+    return isAppleSelection(selection) ? APPLE_OPTION : `${MODEL_OPTION_PREFIX}${selection.modelId}`
   }
   return presets.find((p) => p.baseUrl === selection.baseUrl)?.label ?? 'Custom'
 }
@@ -276,14 +278,14 @@ function SelectionSettings(props: {
   const { role, selection } = props
   switch (selection.kind) {
     case 'builtIn':
-      if (role === 'speechToText' && selection.modelId === 'apple') {
+      if (role === 'speechToText' && isAppleSelection(selection)) {
         return (
           <SettingRow title="Model" description="Apple’s on-device speech-to-text. Your audio never leaves this Mac.">
             <span className="badge ok">Built-in</span>
           </SettingRow>
         )
       }
-      if (role === 'chat' && selection.modelId === 'apple') {
+      if (role === 'chat' && isAppleSelection(selection)) {
         return (
           <SettingRow title="Model" description="Apple Intelligence’s on-device model. Your text never leaves this Mac.">
             <span className="badge ok">Built-in</span>
@@ -336,7 +338,7 @@ const DOWNLOADED_MODEL_TEXT: Record<ModelRole, { private: string; preparing: str
 function DownloadedModel({ role, status }: { role: ModelRole; status: ModelStatus }) {
   const { model, state } = status
   const text = DOWNLOADED_MODEL_TEXT[role]
-  const selectApple = () => update({ [role]: { kind: 'builtIn', modelId: 'apple' } })
+  const selectApple = () => update({ [role]: APPLE_SELECTION })
   switch (state.kind) {
     case 'installed':
       if (!isRunnable(model)) {

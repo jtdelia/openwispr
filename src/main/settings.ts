@@ -1,4 +1,5 @@
 import {
+  APPLE_SELECTION,
   DEFAULT_SHORTCUTS,
   type EndpointConfig,
   type ModelSelection,
@@ -8,8 +9,8 @@ import {
 } from '../shared/types'
 
 export const DEFAULT_SETTINGS: Settings = {
-  speechToText: { kind: 'builtIn', modelId: 'apple' },
-  chat: { kind: 'builtIn', modelId: 'apple' },
+  speechToText: { ...APPLE_SELECTION },
+  chat: { ...APPLE_SELECTION },
   language: '',
   cleanup: { enabled: true },
   shortcuts: DEFAULT_SHORTCUTS,
