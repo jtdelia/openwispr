@@ -38,8 +38,9 @@ function legacyEndpoint(config: Partial<EndpointConfig>, role: keyof typeof LEGA
 
 /**
  * Settings as read from disk, migrating older files; API keys stay as stored (encrypted). An older
- * role stays on its Endpoint when the user changed its base URL or stored a key (chat also when it
- * used the transcription key for the same server); otherwise it moves to Apple's model.
+ * role stays on its Endpoint when the user changed its base URL or stored a key; otherwise it moves
+ * to Apple's model. Chat without a key of its own gets a copy of the transcription key for the same
+ * server, which older versions lent it.
  */
 export function loadSettings(stored: Record<string, unknown>): Settings {
   const { transcription, cleanup, ...rest } = stored as SettingsPatch & LegacySettings
@@ -53,8 +54,9 @@ export function loadSettings(stored: Record<string, unknown>): Settings {
   }
   if (cleanup) {
     const chat = legacyEndpoint(cleanup, 'chat')
-    const sharesKey = speechToText !== undefined && speechToText.apiKey !== '' && speechToText.baseUrl === chat.baseUrl
-    if (isCustom(chat) || sharesKey) patch.chat ??= { kind: 'endpoint', ...chat }
+    const sharedKey = speechToText?.baseUrl === chat.baseUrl ? speechToText.apiKey : ''
+    if (chat.apiKey === '') chat.apiKey = sharedKey
+    if (isCustom(chat)) patch.chat ??= { kind: 'endpoint', ...chat }
     patch.cleanup = cleanup.enabled === undefined ? {} : { enabled: cleanup.enabled }
   }
   return applySettingsPatch(DEFAULT_SETTINGS, patch)

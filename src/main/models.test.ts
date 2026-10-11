@@ -7,7 +7,7 @@ import type { ModelManifest } from './modelDownloads'
 import type { ModelErrorCode, ModelProcessMessage, ModelProcessTransport, ModelRequest } from './modelProcess'
 import { Models, type ModelSettings } from './models'
 import { RECOMMENDED_MODELS } from './recommendedModels'
-import { loadSettings } from './settings'
+import { applySettingsPatch, loadSettings } from './settings'
 import type { CleanupInput } from './textProcessing'
 
 interface SentRequest {
@@ -678,7 +678,7 @@ describe('settings migration', () => {
       kind: 'endpoint',
       baseUrl: 'https://api.groq.com/openai/v1',
       model: 'llama-3.3-70b-versatile',
-      apiKey: '',
+      apiKey: 'enc:groq',
     })
     expect(settings.language).toBe('fr')
     expect(settings.cleanup).toEqual({ enabled: false })
@@ -736,13 +736,27 @@ describe('settings migration', () => {
     expect(local.speechToText).toEqual({ kind: 'endpoint', baseUrl: 'http://localhost:8000/v1', model: 'distil-whisper', apiKey: '' })
   })
 
-  it('keeps chat on the Endpoint whose key it shared with transcription', () => {
+  it('keeps chat on the Endpoint whose key it shared with transcription, with its own copy of the key', () => {
     const settings = loadSettings({
       transcription: { baseUrl: 'https://api.openai.com/v1', model: 'gpt-4o-mini-transcribe', apiKey: 'enc:openai' },
       cleanup: { enabled: true, baseUrl: 'https://api.openai.com/v1', model: 'gpt-4.1-mini', apiKey: '' },
     })
     expect(settings.speechToText).toMatchObject({ kind: 'endpoint', apiKey: 'enc:openai' })
-    expect(settings.chat).toEqual({ kind: 'endpoint', baseUrl: 'https://api.openai.com/v1', model: 'gpt-4.1-mini', apiKey: '' })
+    expect(settings.chat).toEqual({ kind: 'endpoint', baseUrl: 'https://api.openai.com/v1', model: 'gpt-4.1-mini', apiKey: 'enc:openai' })
+  })
+
+  it('keeps sending the shared key to chat after speech-to-text moves to another server', async () => {
+    const migrated = loadSettings({
+      transcription: { baseUrl: 'https://api.openai.com/v1', model: 'gpt-4o-mini-transcribe', apiKey: 'sk-openai' },
+      cleanup: { enabled: true, baseUrl: 'https://api.openai.com/v1', model: 'gpt-4.1-mini', apiKey: '' },
+    })
+    const settings = applySettingsPatch(migrated, {
+      speechToText: { kind: 'endpoint', baseUrl: 'https://api.groq.com/openai/v1', apiKey: 'gsk-groq' },
+    })
+    const { models: m, sent } = models(settings, () => Response.json({ choices: [{ message: { content: 'ok' } }] }))
+    await m.complete([{ role: 'user', content: 'hi' }])
+    expect(sent[0].url).toBe('https://api.openai.com/v1/chat/completions')
+    expect(sent[0].headers.Authorization).toBe('Bearer sk-openai')
   })
 
   it('leaves already-migrated Endpoint selections alone', () => {
