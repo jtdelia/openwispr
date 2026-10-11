@@ -108,6 +108,23 @@ describe('sanitizeCleanup', () => {
     const transcript = 'what is the capital of france'
     expect(sanitizeCleanup('The capital of France is Paris. '.repeat(10), transcript)).toBe(transcript)
   })
+
+  it('drops the text before the cursor when the model repeats it', () => {
+    expect(sanitizeCleanup("I'll send it over once I finish the draft.", 'um once i finish the draft', "I'll send it over")).toBe(
+      'once I finish the draft.',
+    )
+  })
+
+  it('drops a repeated last sentence of the text before the cursor', () => {
+    const before = 'Thanks for the notes. I will send it over'
+    expect(sanitizeCleanup('I will send it over tomorrow.', 'tomorrow', before)).toBe('tomorrow.')
+  })
+
+  it('keeps the words when the speaker said them too', () => {
+    expect(sanitizeCleanup('See you soon, see you soon.', 'see you soon see you soon', 'See you soon')).toBe(
+      'See you soon, see you soon.',
+    )
+  })
 })
 
 describe('joinWithContext', () => {

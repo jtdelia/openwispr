@@ -183,15 +183,28 @@ function isRefusal(output: string, transcript: string): boolean {
   return match !== null && !bareWords(transcript).includes(bareWords(match[0]))
 }
 
+/** `text` without a leading copy of the text before the cursor (or its last sentence) that the speaker didn't say. */
+function withoutRepeatedContext(text: string, transcript: string, beforeText: string): string {
+  const lastSentence = beforeText.split(/(?<=[.!?])\s+/).at(-1) ?? ''
+  for (const context of [beforeText, lastSentence]) {
+    const words = bareWords(context)
+    if (words.trim() === '' || bareWords(transcript).startsWith(words) || !bareWords(text).startsWith(words)) continue
+    const count = words.trim().split(' ').length
+    const prefix = new RegExp(`^(?:[^\\p{L}\\p{N}]*[\\p{L}\\p{N}'’]+){${count}}[\\s,;:]*`, 'u')
+    return text.replace(prefix, '')
+  }
+  return text
+}
+
 /**
- * Strips wrappers some models add and rejects output that refuses or diverged so far from the
- * transcript that the model probably answered it instead of formatting it.
+ * Strips wrappers some models add and context they repeat, and rejects output that refuses or
+ * diverged so far from the transcript that the model probably answered it instead of formatting it.
  */
-export function sanitizeCleanup(output: string, transcript: string): string {
+export function sanitizeCleanup(output: string, transcript: string, beforeText = ''): string {
   let text = output.trim().replace(/^<transcript>\s*|\s*<\/transcript>$/g, '')
   if (/^".*"$/s.test(text) && !/^".*"$/s.test(transcript.trim())) text = text.slice(1, -1)
   if (text.length > transcript.length * 2.5 + 80 || isRefusal(text, transcript)) return transcript
-  return text.trim()
+  return withoutRepeatedContext(text.trim(), transcript, beforeText).trim()
 }
 
 /** Adds the space a typist would add between existing text and the inserted transcript. */

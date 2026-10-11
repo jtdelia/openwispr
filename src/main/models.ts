@@ -324,7 +324,7 @@ export class Models extends EventEmitter<{ progress: [ModelProgress] }> {
         label: 'Chat',
         maxTokens: cleanupMaxTokens(input.transcript),
       })
-      return { text: sanitizeCleanup(output, input.transcript), notice: null }
+      return { text: sanitizeCleanup(output, input.transcript, input.beforeText), notice: null }
     } catch (error) {
       return { text: input.transcript, notice: cleanupNotice(error) }
     }
