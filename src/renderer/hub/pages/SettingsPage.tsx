@@ -22,22 +22,23 @@ import { ModelsSection } from './ModelsSection'
 
 const api = window.openwispr
 
-interface Preset {
+/** An Endpoint offered by name, with the models it's set up with for each role. */
+interface KnownEndpoint {
   label: string
   baseUrl: string
-  transcriptionModel: string
-  cleanupModel: string
+  speechToTextModel: string
+  chatModel: string
 }
 
 const APPLE_OPTION = 'Apple (on this Mac)'
 const MODEL_OPTION_PREFIX = 'model:'
 
-const PRESETS: Preset[] = [
-  { label: 'OpenAI', baseUrl: 'https://api.openai.com/v1', transcriptionModel: 'gpt-4o-mini-transcribe', cleanupModel: 'gpt-4.1-mini' },
-  { label: 'Groq', baseUrl: 'https://api.groq.com/openai/v1', transcriptionModel: 'whisper-large-v3-turbo', cleanupModel: 'llama-3.3-70b-versatile' },
-  { label: 'Local (Speaches / faster-whisper)', baseUrl: 'http://localhost:8000/v1', transcriptionModel: 'Systran/faster-distil-whisper-large-v3', cleanupModel: '' },
+const KNOWN_ENDPOINTS: KnownEndpoint[] = [
+  { label: 'OpenAI', baseUrl: 'https://api.openai.com/v1', speechToTextModel: 'gpt-4o-mini-transcribe', chatModel: 'gpt-4.1-mini' },
+  { label: 'Groq', baseUrl: 'https://api.groq.com/openai/v1', speechToTextModel: 'whisper-large-v3-turbo', chatModel: 'llama-3.3-70b-versatile' },
+  { label: 'Local (Speaches / faster-whisper)', baseUrl: 'http://localhost:8000/v1', speechToTextModel: 'Systran/faster-distil-whisper-large-v3', chatModel: '' },
 ]
-const CHAT_PRESETS = PRESETS.filter((p) => p.cleanupModel)
+const CHAT_ENDPOINTS = KNOWN_ENDPOINTS.filter((e) => e.chatModel)
 
 /** The Apple Intelligence & Siri pane; there's no deep link to the switch itself. */
 const APPLE_INTELLIGENCE_SETTINGS = 'x-apple.systempreferences:com.apple.Siri-Settings.extension'
@@ -89,7 +90,7 @@ export function SettingsPage() {
         )}
       </section>
 
-      <ProviderSection settings={settings} library={library} />
+      <ModelSections settings={settings} library={library} />
 
       {library && <ModelsSection library={library} settings={settings} />}
 
@@ -144,22 +145,20 @@ function modelOptions(library: ModelLibrary | null, role: ModelRole, selection: 
   )
 }
 
-function ProviderSection({ settings, library }: { settings: PublicSettings; library: ModelLibrary | null }) {
+function ModelSections({ settings, library }: { settings: PublicSettings; library: ModelLibrary | null }) {
   const { speechToText, chat, cleanup } = settings
   const isAppleSpeech = isAppleSelection(speechToText)
   const isAppleChat = isAppleSelection(chat)
-  const applySpeechPreset = (label: string) => {
+  const selectSpeech = (label: string) => {
     if (selectBuiltIn('speechToText', label)) return
-    const preset = PRESETS.find((p) => p.label === label)
-    if (preset) update({ speechToText: { kind: 'endpoint', baseUrl: preset.baseUrl, model: preset.transcriptionModel } })
+    const endpoint = KNOWN_ENDPOINTS.find((e) => e.label === label)
+    if (endpoint) update({ speechToText: { kind: 'endpoint', baseUrl: endpoint.baseUrl, model: endpoint.speechToTextModel } })
   }
-  const applyChatPreset = (label: string) => {
+  const selectChat = (label: string) => {
     if (selectBuiltIn('chat', label)) return
-    const preset = CHAT_PRESETS.find((p) => p.label === label)
-    if (preset) update({ chat: { kind: 'endpoint', baseUrl: preset.baseUrl, model: preset.cleanupModel } })
+    const endpoint = CHAT_ENDPOINTS.find((e) => e.label === label)
+    if (endpoint) update({ chat: { kind: 'endpoint', baseUrl: endpoint.baseUrl, model: endpoint.chatModel } })
   }
-  const activeSpeechPreset = activePreset(PRESETS, speechToText)
-  const activeChatPreset = activePreset(CHAT_PRESETS, chat)
 
   return (
     <>
@@ -168,12 +167,12 @@ function ProviderSection({ settings, library }: { settings: PublicSettings; libr
         <p className="muted small">
           Apple’s on-device model, a downloaded Built-in model, or any OpenAI-compatible speech-to-text Endpoint.
         </p>
-        <SettingRow title="Provider">
-          <ProviderSelect
-            value={activeSpeechPreset}
+        <SettingRow title="Model or Endpoint">
+          <ModelSelect
+            value={selectedOption(KNOWN_ENDPOINTS, speechToText)}
             models={modelOptions(library, 'speechToText', speechToText)}
-            presets={PRESETS}
-            onChange={applySpeechPreset}
+            endpoints={KNOWN_ENDPOINTS}
+            onChange={selectSpeech}
           />
         </SettingRow>
         <SelectionSettings role="speechToText" selection={speechToText} library={library} />
@@ -202,12 +201,12 @@ function ProviderSection({ settings, library }: { settings: PublicSettings; libr
           checked={cleanup.enabled}
           onChange={(enabled) => update({ cleanup: { enabled } })}
         />
-        <SettingRow title="Provider">
-          <ProviderSelect
-            value={activeChatPreset}
+        <SettingRow title="Model or Endpoint">
+          <ModelSelect
+            value={selectedOption(CHAT_ENDPOINTS, chat)}
             models={modelOptions(library, 'chat', chat)}
-            presets={CHAT_PRESETS}
-            onChange={applyChatPreset}
+            endpoints={CHAT_ENDPOINTS}
+            onChange={selectChat}
           />
         </SettingRow>
         <SelectionSettings
@@ -240,17 +239,17 @@ function selectBuiltIn(role: ModelRole, label: string): boolean {
   return false
 }
 
-function activePreset(presets: Preset[], selection: PublicModelSelection): string {
+function selectedOption(endpoints: KnownEndpoint[], selection: PublicModelSelection): string {
   if (selection.kind === 'builtIn') {
     return isAppleSelection(selection) ? APPLE_OPTION : `${MODEL_OPTION_PREFIX}${selection.modelId}`
   }
-  return presets.find((p) => p.baseUrl === selection.baseUrl)?.label ?? 'Custom'
+  return endpoints.find((e) => e.baseUrl === selection.baseUrl)?.label ?? 'Custom'
 }
 
-function ProviderSelect(props: {
+function ModelSelect(props: {
   value: string
   models?: ModelStatus[]
-  presets: Preset[]
+  endpoints: KnownEndpoint[]
   onChange: (label: string) => void
 }) {
   return (
@@ -261,8 +260,8 @@ function ProviderSelect(props: {
           {model.name} (on this Mac)
         </option>
       ))}
-      {props.presets.map((p) => (
-        <option key={p.label}>{p.label}</option>
+      {props.endpoints.map((e) => (
+        <option key={e.label}>{e.label}</option>
       ))}
       <option disabled>Custom</option>
     </select>

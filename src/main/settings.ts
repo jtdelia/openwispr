@@ -23,7 +23,7 @@ export const DEFAULT_SETTINGS: Settings = {
   userName: '',
 }
 
-/** Before Models, each role was a provider config, with Cleanup's living under `cleanup`. */
+/** Before Models, each role was an Endpoint config, with Cleanup's living under `cleanup`. */
 interface LegacySettings {
   transcription?: Partial<EndpointConfig & { language: string }>
   cleanup?: Partial<EndpointConfig & { enabled: boolean }>

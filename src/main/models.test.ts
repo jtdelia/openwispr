@@ -689,7 +689,7 @@ describe('settings migration', () => {
     userName: 'Jane',
   }
 
-  it('turns the old provider settings into Endpoint selections with the same values', () => {
+  it('turns the old per-role settings into Endpoint selections with the same values', () => {
     const settings = loadSettings(groqFile)
     expect(settings.speechToText).toEqual({
       kind: 'endpoint',
@@ -814,7 +814,7 @@ describe('Models availability', () => {
     const cloud = models({ ...ENDPOINTS, speechToText: { ...ENDPOINTS.speechToText, apiKey: '' } }).models
     expect(cloud.availability('speechToText')).toEqual({
       available: false,
-      reason: 'Add a transcription API key in Settings',
+      reason: 'Add a speech-to-text API key in Settings',
     })
     const local = models({ ...ENDPOINTS, speechToText: { kind: 'endpoint', ...keyless } }).models
     expect(local.availability('speechToText')).toEqual({ available: true })

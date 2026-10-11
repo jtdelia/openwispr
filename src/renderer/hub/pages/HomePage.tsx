@@ -18,7 +18,7 @@ export function HomePage({ navigate }: { navigate: (page: Page) => void }) {
     settings?.speechToText.kind === 'endpoint' &&
       !settings.speechToText.hasApiKey &&
       !isLocalEndpoint(settings.speechToText.baseUrl) &&
-      'Add a transcription API key',
+      'Add a speech-to-text API key',
     permissions && !permissions.helperRunning && 'Build the native helper (npm run helper:build)',
   ].filter(Boolean) as string[]
 

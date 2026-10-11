@@ -217,7 +217,7 @@ export class Models extends EventEmitter<{ progress: [ModelProgress] }> {
           return { available: false, reason: 'Set up a speech-to-text model in Settings' }
         }
         if (!config.apiKey && !isLocalEndpoint(config.baseUrl)) {
-          return { available: false, reason: 'Add a transcription API key in Settings' }
+          return { available: false, reason: 'Add a speech-to-text API key in Settings' }
         }
         return { available: true }
       case 'chat':
