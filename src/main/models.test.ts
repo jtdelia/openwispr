@@ -77,7 +77,7 @@ function models(
   transport: ModelProcessTransport = fakeModelProcess().transport,
 ) {
   const fake = fakeFetch(reply)
-  return { models: new Models({ fetch: fake.fetch, settings: () => settings, transport }), sent: fake.sent }
+  return { models: new Models({ fetch: fake.fetch, settings: () => settings, transport, modelsDir: '/nonexistent' }), sent: fake.sent }
 }
 
 describe('Models routing', () => {

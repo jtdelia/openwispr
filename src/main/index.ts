@@ -1,3 +1,4 @@
+import { join } from 'node:path'
 import { app, clipboard, ipcMain, Menu, systemPreferences, Tray } from 'electron'
 import { Channel, type FlowBarAction, type MeetingChunk, type MeetingRecorderEvent, type RecorderEvent } from '../shared/api'
 import { microphoneHelp } from '../shared/permissions'
@@ -44,6 +45,7 @@ async function main(): Promise<void> {
     fetch: globalThis.fetch,
     settings: () => store.settings,
     transport: spawnTransport(modelProcessPath, { requestSpeechAuthorization: app.isPackaged }),
+    modelsDir: join(app.getPath('userData'), 'models'),
   })
   const helper = new Helper()
   const windows = new Windows()
@@ -113,6 +115,14 @@ async function main(): Promise<void> {
     return models.testEndpoint(role)
   })
   ipcMain.handle(Channel.getBuiltInStatus, () => models.status())
+  models.onLibraryChanged(() => windows.broadcast(Channel.dataChanged, 'models'))
+  ipcMain.handle(Channel.getModelLibrary, () => models.library())
+  ipcMain.handle(Channel.downloadModel, (_e, id: string) => {
+    // A failure is shown from the library state, which keeps the error.
+    void models.download(id).catch(() => undefined)
+  })
+  ipcMain.handle(Channel.cancelDownload, (_e, id: string) => models.cancelDownload(id))
+  ipcMain.handle(Channel.removeModel, (_e, id: string) => models.removeModel(id))
   ipcMain.handle(Channel.getHistory, () => store.getHistory())
   ipcMain.handle(Channel.deleteHistoryEntry, (_e, id: string) => {
     store.deleteHistory(id)

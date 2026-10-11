@@ -1,0 +1,67 @@
+import type { ModelRole } from './types'
+
+/** Vision models are listed for Lens, which comes later. */
+export type ModelTask = ModelRole | 'vision'
+
+export const MODEL_TASKS: ModelTask[] = ['speechToText', 'chat', 'vision']
+
+export type ModelEngine = 'whisperKit' | 'fluidAudio' | 'mlx'
+
+export type SpeedTier = 'fastest' | 'fast' | 'medium' | 'slow'
+
+/**
+ * Files to fetch from one Hugging Face repo at a pinned commit. With `folder`, only that folder is fetched
+ * and its contents land at the model's root; with `files`, only those paths (a trailing `/` takes a whole
+ * folder); with neither, the whole repo minus docs and images.
+ */
+export interface ModelSource {
+  repo: string
+  /** Commit sha. */
+  revision: string
+  folder?: string
+  files?: string[]
+}
+
+/** A Built-in model OpenWispr can download: a Recommended model, or one the user added. */
+export interface ModelEntry {
+  id: string
+  name: string
+  task: ModelTask
+  engine: ModelEngine
+  /** More than one when an engine needs files from a second repo, like WhisperKit's tokenizer. */
+  sources: ModelSource[]
+  /** Approximate; the real total comes from the Hugging Face listing. */
+  sizeBytes: number
+  /** Rough resident memory while loaded. */
+  memoryBytes: number
+  speed: SpeedTier
+  /** For display, like "99 languages". */
+  languages: string
+  /** ISO codes when the set is small and known; null for broadly multilingual models. */
+  languageCodes: string[] | null
+  /** Extra chat template variables the engine must pass, like `enable_thinking: false`. */
+  chatTemplateContext?: Record<string, boolean>
+}
+
+export type DownloadState =
+  | { kind: 'notDownloaded' }
+  | { kind: 'downloading'; bytesDone: number; totalBytes: number; bytesPerSecond: number }
+  /** Interrupted (quit, or retries ran out) with partial files kept, so it resumes where it stopped. */
+  | { kind: 'paused'; bytesDone: number; totalBytes: number; error: string | null }
+  | { kind: 'installed'; sizeBytes: number }
+
+export interface ModelStatus {
+  model: ModelEntry
+  recommended: boolean
+  userAdded: boolean
+  /** Its memory estimate exceeds about 60% of this Mac's memory, so it would likely thrash. */
+  oversized: boolean
+  state: DownloadState
+}
+
+export interface ModelLibrary {
+  models: ModelStatus[]
+  /** Everything under the models folder, partial downloads included. */
+  diskUsageBytes: number
+  physicalMemoryBytes: number
+}
