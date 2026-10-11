@@ -3,6 +3,7 @@ import {
   appCategory,
   applyReplacements,
   applySnippets,
+  cleanupMessages,
   joinWithContext,
   sanitizeCleanup,
   styleContext,
@@ -54,6 +55,30 @@ describe('transcriptionPrompt', () => {
   it('lists vocabulary', () => {
     expect(transcriptionPrompt([{ id: '1', word: 'Kubernetes' }], 'Tai')).toBe('Vocabulary: Tai, Kubernetes.')
     expect(transcriptionPrompt([], '')).toBe('')
+  })
+})
+
+describe('cleanupMessages', () => {
+  const input = {
+    transcript: 'once i finish the draft',
+    style: 'casual' as const,
+    category: 'other' as const,
+    beforeText: "I'll send it over",
+    dictionary: [{ id: '1', word: 'OpenWispr' }],
+    userName: 'Jane',
+  }
+
+  it('sends only the transcript to clean up, and says when it continues a sentence without repeating it', () => {
+    const [system, user] = cleanupMessages(input)
+    expect(user).toEqual({ role: 'user', content: '<transcript>\nonce i finish the draft\n</transcript>' })
+    expect(system.content).toMatch(/continues a sentence/)
+    expect(system.content).not.toContain("I'll send it over")
+    expect(system.content).toContain('OpenWispr')
+  })
+
+  it('leaves out the continuation rule after a finished sentence or with nothing before the cursor', () => {
+    expect(cleanupMessages({ ...input, beforeText: 'Done.' })[0].content).not.toMatch(/continues a sentence/)
+    expect(cleanupMessages({ ...input, beforeText: '' })[0].content).not.toMatch(/continues a sentence/)
   })
 })
 

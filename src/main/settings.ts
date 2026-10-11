@@ -8,8 +8,8 @@ import {
 } from '../shared/types'
 
 export const DEFAULT_SETTINGS: Settings = {
-  speechToText: { kind: 'endpoint', baseUrl: 'https://api.openai.com/v1', model: 'gpt-4o-mini-transcribe', apiKey: '' },
-  chat: { kind: 'endpoint', baseUrl: 'https://api.openai.com/v1', model: 'gpt-4.1-mini', apiKey: '' },
+  speechToText: { kind: 'builtIn', modelId: 'apple' },
+  chat: { kind: 'builtIn', modelId: 'apple' },
   language: '',
   cleanup: { enabled: true },
   shortcuts: DEFAULT_SHORTCUTS,
@@ -28,20 +28,33 @@ interface LegacySettings {
   cleanup?: Partial<EndpointConfig & { enabled: boolean }>
 }
 
-function legacyEndpoint(config: Partial<EndpointConfig>): ModelSelectionPatch {
-  return { kind: 'endpoint', baseUrl: config.baseUrl, model: config.model, apiKey: config.apiKey }
+/** What older versions used when a field was missing. */
+const LEGACY_BASE_URL = 'https://api.openai.com/v1'
+const LEGACY_MODELS = { speechToText: 'gpt-4o-mini-transcribe', chat: 'gpt-4.1-mini' }
+
+function legacyEndpoint(config: Partial<EndpointConfig>, role: keyof typeof LEGACY_MODELS): EndpointConfig {
+  return { baseUrl: config.baseUrl ?? LEGACY_BASE_URL, model: config.model ?? LEGACY_MODELS[role], apiKey: config.apiKey ?? '' }
 }
 
-/** Settings as read from disk, migrating older files; API keys stay as stored (encrypted). */
+/**
+ * Settings as read from disk, migrating older files; API keys stay as stored (encrypted). An older
+ * role stays on its Endpoint when the user changed its base URL or stored a key (chat also when it
+ * used the transcription key for the same server); otherwise it moves to Apple's model.
+ */
 export function loadSettings(stored: Record<string, unknown>): Settings {
   const { transcription, cleanup, ...rest } = stored as SettingsPatch & LegacySettings
   const patch: SettingsPatch = rest
+  const isCustom = (config: EndpointConfig) => config.baseUrl !== LEGACY_BASE_URL || config.apiKey !== ''
+  let speechToText: EndpointConfig | undefined
   if (transcription) {
-    patch.speechToText ??= legacyEndpoint(transcription)
+    speechToText = legacyEndpoint(transcription, 'speechToText')
+    if (isCustom(speechToText)) patch.speechToText ??= { kind: 'endpoint', ...speechToText }
     patch.language ??= transcription.language
   }
   if (cleanup) {
-    if ('baseUrl' in cleanup || 'model' in cleanup) patch.chat ??= legacyEndpoint(cleanup)
+    const chat = legacyEndpoint(cleanup, 'chat')
+    const sharesKey = speechToText !== undefined && speechToText.apiKey !== '' && speechToText.baseUrl === chat.baseUrl
+    if (isCustom(chat) || sharesKey) patch.chat ??= { kind: 'endpoint', ...chat }
     patch.cleanup = cleanup.enabled === undefined ? {} : { enabled: cleanup.enabled }
   }
   return applySettingsPatch(DEFAULT_SETTINGS, patch)

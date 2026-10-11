@@ -3,6 +3,7 @@ import type { Settings } from '../shared/types'
 import type { ModelErrorCode, ModelProcessMessage, ModelProcessTransport, ModelRequest } from './modelProcess'
 import { Models, type ModelSettings } from './models'
 import { loadSettings } from './settings'
+import type { CleanupInput } from './textProcessing'
 
 interface SentRequest {
   url: string
@@ -212,7 +213,10 @@ describe('Models with Built-in speech-to-text', () => {
   })
 
   it('reads the languages Apple supports from the model process', async () => {
-    const status = { appleSpeech: { available: true, locale: null, locales: ['de-DE', 'en-US'] } }
+    const status = {
+      appleSpeech: { available: true, locale: null, locales: ['de-DE', 'en-US'] },
+      appleChat: { available: true, contextSize: 4096 },
+    }
     const process = fakeModelProcess(() => ({ result: status }))
     const { models: m } = models({ ...APPLE_SPEECH, language: 'nl' }, undefined, process.transport)
     expect(await m.status()).toEqual(status)
@@ -291,6 +295,147 @@ describe('Models with a downloaded Parakeet model', () => {
     await expect(m.transcribe(WAV, { prompt: '' })).rejects.toMatchObject({
       code: 'unsupportedLanguage',
       message: "Parakeet TDT v3 doesn't support Japanese. Choose another language in Settings",
+    })
+  })
+})
+
+const APPLE_CHAT = { ...ENDPOINTS, chat: { kind: 'builtIn', modelId: 'apple' } } satisfies ModelSettings
+
+describe('Models with Built-in chat', () => {
+  it("sends chat messages to Apple's model in the model process with an output cap", async () => {
+    const process = fakeModelProcess(() => ({ result: { text: ' Tidy text. ' } }))
+    const { models: m, sent } = models(APPLE_CHAT, undefined, process.transport)
+    const messages = [
+      { role: 'system' as const, content: 'Clean up.' },
+      { role: 'user' as const, content: 'tidy text' },
+    ]
+    expect(m.availability('chat')).toEqual({ available: true })
+    expect(await m.complete(messages, { maxTokens: 300 })).toBe('Tidy text.')
+    expect(sent).toHaveLength(0)
+    expect(process.requests()).toEqual([{ id: expect.any(Number), type: 'complete', model: 'apple', messages, maxTokens: 300 }])
+  })
+
+  it("loads Apple's chat model along with speech-to-text when a dictation starts", () => {
+    const process = fakeModelProcess()
+    const { models: m } = models({ ...APPLE_SPEECH, chat: { kind: 'builtIn', modelId: 'apple' } }, undefined, process.transport)
+    m.warmUp()
+    expect(process.requests()).toEqual([
+      {
+        id: expect.any(Number),
+        type: 'load',
+        models: [
+          { role: 'speechToText', id: 'apple', language: 'en' },
+          { role: 'chat', id: 'apple', language: 'en' },
+        ],
+      },
+    ])
+  })
+
+  it("reads the chat model's context size from the model process, and has none for an Endpoint", async () => {
+    const status = {
+      appleSpeech: { available: true, locale: 'de-DE', locales: ['de-DE'] },
+      appleChat: { available: true, contextSize: 4096 },
+    }
+    const process = fakeModelProcess(() => ({ result: status }))
+    const { models: m } = models(APPLE_CHAT, undefined, process.transport)
+    expect(await m.chatContextSize()).toBe(4096)
+    expect(await models(ENDPOINTS).models.chatContextSize()).toBeNull()
+  })
+
+  it('explains in the status when Apple Intelligence is off', async () => {
+    const status = {
+      appleSpeech: { available: true, locale: 'en-US', locales: ['en-US'] },
+      appleChat: { available: false, reason: 'Apple Intelligence is off', fix: 'turnOnAppleIntelligence', contextSize: null },
+    }
+    const process = fakeModelProcess(() => ({ result: status }))
+    const { models: m } = models(APPLE_CHAT, undefined, process.transport)
+    expect(await m.status()).toEqual(status)
+    expect(await m.chatContextSize()).toBeNull()
+  })
+})
+
+const DICTATION: CleanupInput = {
+  transcript: 'um so lets meet on tuesday',
+  style: 'casual',
+  category: 'other',
+  beforeText: '',
+  dictionary: [],
+  userName: '',
+}
+
+describe('Models Cleanup', () => {
+  it('keeps the transcript and says why when Apple Intelligence is off', async () => {
+    const process = fakeModelProcess(() => ({ error: { code: 'unavailable', message: 'Apple Intelligence is off' } }))
+    const { models: m } = models(APPLE_CHAT, undefined, process.transport)
+    expect(await m.cleanup(DICTATION)).toEqual({
+      text: 'um so lets meet on tuesday',
+      notice: 'Cleanup skipped: Apple Intelligence is off',
+    })
+    expect(process.requests()[0]).toMatchObject({ type: 'complete', model: 'apple' })
+  })
+
+  it('keeps the transcript quietly when the model refuses, whether as an error or as its answer', async () => {
+    const refusing = fakeModelProcess(() => ({ error: { code: 'refused', message: 'Guardrail violation' } }))
+    expect(await models(APPLE_CHAT, undefined, refusing.transport).models.cleanup(DICTATION)).toEqual({
+      text: 'um so lets meet on tuesday',
+      notice: null,
+    })
+    for (const answer of ['Unable to work with that request.', "I'm sorry, but I can't assist with that.", 'I cannot help with that request.']) {
+      const process = fakeModelProcess(() => ({ result: { text: answer } }))
+      expect(await models(APPLE_CHAT, undefined, process.transport).models.cleanup(DICTATION)).toEqual({
+        text: 'um so lets meet on tuesday',
+        notice: null,
+      })
+    }
+  })
+
+  it('keeps a dictated apology, which is not a refusal', async () => {
+    const process = fakeModelProcess(() => ({ result: { text: "I'm sorry, I can't make it tonight." } }))
+    const { models: m } = models(APPLE_CHAT, undefined, process.transport)
+    expect(await m.cleanup({ ...DICTATION, transcript: 'um im sorry i cant make it tonight' })).toEqual({
+      text: "I'm sorry, I can't make it tonight.",
+      notice: null,
+    })
+  })
+
+  it('returns the cleaned text and asks for an answer about as long as the dictation', async () => {
+    const process = fakeModelProcess(() => ({ result: { text: "So let's meet on Tuesday." } }))
+    const { models: m } = models(APPLE_CHAT, undefined, process.transport)
+    expect(await m.cleanup(DICTATION)).toEqual({ text: "So let's meet on Tuesday.", notice: null })
+    const [request] = process.requests()
+    expect(request).toMatchObject({ type: 'complete', model: 'apple' })
+    expect(request.type === 'complete' && request.maxTokens).toBeGreaterThanOrEqual(DICTATION.transcript.length / 2)
+    expect(request.type === 'complete' && request.maxTokens).toBeLessThan(1024)
+  })
+
+  it('keeps the transcript when it is too long for the model', async () => {
+    const process = fakeModelProcess(() => ({
+      error: { code: 'contextExceeded', message: "Too long for Apple's chat model (5120 of 4096 tokens)" },
+    }))
+    expect(await models(APPLE_CHAT, undefined, process.transport).models.cleanup(DICTATION)).toEqual({
+      text: 'um so lets meet on tuesday',
+      notice: "Cleanup skipped: Too long for Apple's chat model (5120 of 4096 tokens)",
+    })
+  })
+
+  it('keeps the transcript when a cloud chat Endpoint rejects the request, such as without a key', async () => {
+    const { models: m } = models({ ...ENDPOINTS, chat: { ...ENDPOINTS.chat, apiKey: '' } }, () =>
+      Response.json({ error: { message: 'Missing bearer authentication' } }, { status: 401 }),
+    )
+    expect(await m.cleanup(DICTATION)).toEqual({
+      text: 'um so lets meet on tuesday',
+      notice: 'Cleanup failed: Chat failed (401): Missing bearer authentication',
+    })
+  })
+
+  it('keeps the transcript when the model process crashes', async () => {
+    const process = fakeModelProcess(() => undefined)
+    const { models: m } = models(APPLE_CHAT, undefined, process.transport)
+    const result = m.cleanup(DICTATION)
+    process.connections[0].crash()
+    expect(await result).toEqual({
+      text: 'um so lets meet on tuesday',
+      notice: expect.stringMatching(/^Cleanup failed: The model process stopped unexpectedly/),
     })
   })
 })
@@ -414,11 +559,56 @@ describe('settings migration', () => {
     expect(sent[0].form?.get('language')).toBe('fr')
   })
 
-  it('fills in defaults for a fresh install and leaves already-migrated settings alone', () => {
+  it("gives a fresh install Apple's models for both roles, so it works with no key and no download", async () => {
     const fresh = loadSettings({})
-    expect(fresh.speechToText).toEqual({ kind: 'endpoint', baseUrl: 'https://api.openai.com/v1', model: 'gpt-4o-mini-transcribe', apiKey: '' })
-    expect(fresh.chat).toEqual({ kind: 'endpoint', baseUrl: 'https://api.openai.com/v1', model: 'gpt-4.1-mini', apiKey: '' })
+    expect(fresh.speechToText).toEqual({ kind: 'builtIn', modelId: 'apple' })
+    expect(fresh.chat).toEqual({ kind: 'builtIn', modelId: 'apple' })
     expect(fresh.cleanup).toEqual({ enabled: true })
+
+    const process = fakeModelProcess((request) => ({ result: { text: request.type === 'complete' ? 'Hi.' : 'hi' } }))
+    const { models: m, sent } = models(fresh, undefined, process.transport)
+    expect(m.availability('speechToText')).toEqual({ available: true })
+    expect(m.availability('chat')).toEqual({ available: true })
+    expect(await m.transcribe(WAV, { prompt: '' })).toBe('hi')
+    expect(await m.complete([{ role: 'user', content: 'hi' }])).toBe('Hi.')
+    expect(sent).toHaveLength(0)
+  })
+
+  it('moves an untouched OpenAI default to Apple, keeping custom base URLs and stored keys on Endpoints', () => {
+    const openAiDefault = {
+      transcription: { baseUrl: 'https://api.openai.com/v1', model: 'gpt-4o-mini-transcribe', apiKey: '', language: '' },
+      cleanup: { enabled: true, baseUrl: 'https://api.openai.com/v1', model: 'gpt-4.1-mini', apiKey: '' },
+    }
+    const untouched = loadSettings(openAiDefault)
+    expect(untouched.speechToText).toEqual({ kind: 'builtIn', modelId: 'apple' })
+    expect(untouched.chat).toEqual({ kind: 'builtIn', modelId: 'apple' })
+
+    const withChatKey = loadSettings({ ...openAiDefault, cleanup: { ...openAiDefault.cleanup, apiKey: 'enc:chat' } })
+    expect(withChatKey.speechToText).toEqual({ kind: 'builtIn', modelId: 'apple' })
+    expect(withChatKey.chat).toEqual({ kind: 'endpoint', baseUrl: 'https://api.openai.com/v1', model: 'gpt-4.1-mini', apiKey: 'enc:chat' })
+
+    const local = loadSettings({
+      ...openAiDefault,
+      transcription: { ...openAiDefault.transcription, baseUrl: 'http://localhost:8000/v1', model: 'distil-whisper' },
+    })
+    expect(local.speechToText).toEqual({ kind: 'endpoint', baseUrl: 'http://localhost:8000/v1', model: 'distil-whisper', apiKey: '' })
+  })
+
+  it('keeps chat on the Endpoint whose key it shared with transcription', () => {
+    const settings = loadSettings({
+      transcription: { baseUrl: 'https://api.openai.com/v1', model: 'gpt-4o-mini-transcribe', apiKey: 'enc:openai' },
+      cleanup: { enabled: true, baseUrl: 'https://api.openai.com/v1', model: 'gpt-4.1-mini', apiKey: '' },
+    })
+    expect(settings.speechToText).toMatchObject({ kind: 'endpoint', apiKey: 'enc:openai' })
+    expect(settings.chat).toEqual({ kind: 'endpoint', baseUrl: 'https://api.openai.com/v1', model: 'gpt-4.1-mini', apiKey: '' })
+  })
+
+  it('leaves already-migrated Endpoint selections alone', () => {
+    const migrated = {
+      speechToText: { kind: 'endpoint', baseUrl: 'https://api.openai.com/v1', model: 'gpt-4o-mini-transcribe', apiKey: '' },
+      chat: { kind: 'endpoint', baseUrl: 'https://api.openai.com/v1', model: 'gpt-4.1-mini', apiKey: '' },
+    }
+    expect(loadSettings(migrated)).toMatchObject(migrated)
     expect(loadSettings(JSON.parse(JSON.stringify(loadSettings(groqFile))))).toEqual(loadSettings(groqFile))
   })
 })
@@ -451,10 +641,10 @@ describe('Models availability', () => {
     expect(local.availability('speechToText')).toEqual({ available: true })
   })
 
-  it('reports Built-in chat and downloaded speech-to-text models as unavailable until they ship', async () => {
+  it('reports downloaded chat and speech-to-text models as unavailable until they ship', async () => {
     const process = fakeModelProcess()
     const { models: m, sent } = models(
-      { ...ENDPOINTS, speechToText: { kind: 'builtIn', modelId: 'whisper-small' }, chat: { kind: 'builtIn', modelId: 'apple' } },
+      { ...ENDPOINTS, speechToText: { kind: 'builtIn', modelId: 'whisper-small' }, chat: { kind: 'builtIn', modelId: 'qwen3.5-4b' } },
       undefined,
       process.transport,
     )

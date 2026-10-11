@@ -18,7 +18,7 @@ struct TranscribeRequest: Decodable, Sendable {
 
 enum RequestBody: Sendable {
     case transcribe(TranscribeRequest)
-    case complete(model: String)
+    case complete(CompleteRequest)
     case load([ModelRef])
     case unload([String])
     /// `speechToText` is the selected downloaded speech-to-text model, if any.
@@ -33,14 +33,14 @@ struct Request: Decodable, Sendable {
     let id: Int
     let body: RequestBody
 
-    private enum CodingKeys: String, CodingKey { case id, type, model, models, language, speechToText }
+    private enum CodingKeys: String, CodingKey { case id, type, models, language, speechToText }
 
     init(from decoder: any Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         id = try container.decode(Int.self, forKey: .id)
         switch try container.decode(String.self, forKey: .type) {
         case "transcribe": body = .transcribe(try TranscribeRequest(from: decoder))
-        case "complete": body = .complete(model: try container.decode(String.self, forKey: .model))
+        case "complete": body = .complete(try CompleteRequest(from: decoder))
         case "load": body = .load(try container.decode([ModelRef].self, forKey: .models))
         case "unload": body = .unload(try container.decode([String].self, forKey: .models))
         case "status":

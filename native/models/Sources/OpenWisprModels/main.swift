@@ -14,6 +14,7 @@ let server = Server(
     appleSpeech: AppleSpeech(requestsAuthorization: arguments.contains("--request-speech-authorization")) { locale, fraction in
         await progress.report(locale: locale, fraction: fraction)
     },
+    appleChat: AppleChat(),
     modelsDir: modelsDir.map { URL(fileURLWithPath: $0, isDirectory: true) },
     parakeet: Parakeet()
 )

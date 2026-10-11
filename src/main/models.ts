@@ -11,8 +11,9 @@ import {
 } from '../shared/types'
 import type { ModelEngine, ModelEntry, ModelLibrary, ModelStatus } from '../shared/modelLibrary'
 import { ModelDownloads } from './modelDownloads'
-import { ModelError, ModelProcess, type ModelProcessTransport, type TranscribeResult } from './modelProcess'
+import { ModelError, ModelProcess, type ModelProcessTransport, type ModelRef, type TranscribeResult } from './modelProcess'
 import { RECOMMENDED_MODELS } from './recommendedModels'
+import { cleanupMaxTokens, cleanupMessages, sanitizeCleanup, type CleanupInput } from './textProcessing'
 import {
   complete,
   parseSegments,
@@ -49,6 +50,7 @@ const APPLE = 'apple'
 const PROCESS_SPEECH_ENGINES = new Set<ModelEngine>(['fluidAudio'])
 const BUILT_IN_UNAVAILABLE = 'Built-in models are not available yet'
 const TEST_TIMEOUT_MS = 20_000
+const DEFAULT_MAX_TOKENS = 1024
 /** A model needing more than this share of physical memory would likely make the Mac swap. */
 const MEMORY_SHARE = 0.6
 
@@ -69,6 +71,31 @@ function silentWav(durationMs: number): Buffer {
   wav.write('data', 36)
   wav.writeUInt32LE(dataBytes, 40)
   return wav
+}
+
+export interface CleanupResult {
+  text: string
+  /** Why Cleanup didn't run, for the Flow bar; null when it ran or the transcript was kept quietly. */
+  notice: string | null
+}
+
+function cleanupNotice(error: unknown): string | null {
+  const message = error instanceof Error ? error.message : String(error)
+  if (!(error instanceof ModelError)) return `Cleanup failed: ${message}`
+  switch (error.code) {
+    case 'refused':
+      return null
+    case 'unavailable':
+    case 'unsupportedLanguage':
+    case 'contextExceeded':
+      return `Cleanup skipped: ${message}`
+    case 'modelFailed':
+      return `Cleanup failed: ${message}`
+    default: {
+      const unreachable: never = error.code
+      throw new Error(`unhandled model error ${String(unreachable)}`)
+    }
+  }
 }
 
 /** The only way Dictation and the Notetaker reach a speech-to-text or chat model. */
@@ -139,9 +166,8 @@ export class Models extends EventEmitter<{ progress: [ModelProgress] }> {
   availability(role: ModelRole): Availability {
     const config = this.resolve(role)
     if (config === null) {
-      return role === 'speechToText' && this.builtInSpeechModel() !== null
-        ? { available: true }
-        : { available: false, reason: BUILT_IN_UNAVAILABLE }
+      const model = role === 'speechToText' ? this.builtInSpeechModel() : this.builtInChatModel()
+      return model !== null ? { available: true } : { available: false, reason: BUILT_IN_UNAVAILABLE }
     }
     switch (role) {
       case 'speechToText':
@@ -174,10 +200,15 @@ export class Models extends EventEmitter<{ progress: [ModelProgress] }> {
   /** A dictation has started: have the selected Built-in models loaded by the time its audio arrives. */
   warmUp(): void {
     const { language } = this.deps.settings()
-    const model = this.builtInSpeechModel()
-    if (model === null) return
+    const speechToText = this.builtInSpeechModel()
+    const chat = this.builtInChatModel()
+    const refs: ModelRef[] = [
+      ...(speechToText === null ? [] : [{ role: 'speechToText' as const, id: speechToText, language }]),
+      ...(chat === null ? [] : [{ role: 'chat' as const, id: chat, language }]),
+    ]
+    if (refs.length === 0) return
     this.process
-      .request({ type: 'load', models: [{ role: 'speechToText', id: model, language }] })
+      .request({ type: 'load', models: refs })
       .catch((error: unknown) => console.warn('[models] warm-up failed', error))
   }
 
@@ -202,13 +233,42 @@ export class Models extends EventEmitter<{ progress: [ModelProgress] }> {
     return this.process.request({ type: 'status', language, ...(model !== null && model !== APPLE && { speechToText: model }) })
   }
 
+  /** How many tokens a chat request and its answer may use together, or null when unknown, as for Endpoints. */
+  async chatContextSize(): Promise<number | null> {
+    if (this.builtInChatModel() === null) return null
+    return (await this.status()).appleChat.contextSize
+  }
+
   /** Stops the model process; the next Built-in request starts it again. */
   stop(): void {
     this.process.stop()
   }
 
-  async complete(messages: ChatMessage[], options: { label?: string; timeoutMs?: number } = {}): Promise<string> {
-    return complete(this.deps.fetch, this.endpoint('chat'), messages, options)
+  /** `maxTokens` caps the answer of Built-in models, which fail rather than cut it off. */
+  async complete(
+    messages: ChatMessage[],
+    { maxTokens = DEFAULT_MAX_TOKENS, ...options }: { label?: string; timeoutMs?: number; maxTokens?: number } = {},
+  ): Promise<string> {
+    const model = this.builtInChatModel()
+    if (model === null) return complete(this.deps.fetch, this.endpoint('chat'), messages, options)
+    return (await this.process.request({ type: 'complete', model, messages, maxTokens })).text.trim()
+  }
+
+  /**
+   * Cleans up a Dictation's (dictionary-corrected) transcript. When the chat model is unavailable,
+   * fails, refuses or answers instead of formatting, the transcript is kept as it is; `notice` says
+   * why when the user should know.
+   */
+  async cleanup(input: CleanupInput): Promise<CleanupResult> {
+    try {
+      const output = await this.complete(cleanupMessages(input), {
+        label: 'Chat',
+        maxTokens: cleanupMaxTokens(input.transcript),
+      })
+      return { text: sanitizeCleanup(output, input.transcript), notice: null }
+    } catch (error) {
+      return { text: input.transcript, notice: cleanupNotice(error) }
+    }
   }
 
   /** Sends the selected Endpoint for `role` a tiny real request. */
@@ -260,6 +320,12 @@ export class Models extends EventEmitter<{ progress: [ModelProgress] }> {
     if (selection.modelId === APPLE) return APPLE
     const entry = RECOMMENDED_MODELS.find((m) => m.id === selection.modelId && m.task === 'speechToText')
     return entry && PROCESS_SPEECH_ENGINES.has(entry.engine) ? entry.id : null
+  }
+
+  /** Like `builtInSpeechModel`, for chat. */
+  private builtInChatModel(): string | null {
+    const selection = this.deps.settings().chat
+    return selection.kind === 'builtIn' && selection.modelId === APPLE ? APPLE : null
   }
 
   /** The Endpoint serving `role`, or null when a Built-in model is selected. */
