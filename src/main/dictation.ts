@@ -232,6 +232,7 @@ export class DictationController {
         transcript: text,
         style: settings.styles[styleContext(category, focus.app.bundleId, focus.app.windowTitle)],
         category,
+        appName: focus.app.appName,
         beforeText: focus.textBox?.beforeText ?? '',
         dictionary,
         userName: settings.userName,

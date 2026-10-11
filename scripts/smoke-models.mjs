@@ -109,6 +109,7 @@ async function cleanUp(complete, fixture) {
     transcript: fixture.transcript,
     style: fixture.style ?? 'casual',
     category: fixture.category ?? 'other',
+    appName: fixture.appName ?? '',
     beforeText: fixture.beforeText ?? '',
     dictionary: [],
     userName: '',
@@ -116,7 +117,7 @@ async function cleanUp(complete, fixture) {
   const started = performance.now()
   try {
     const output = await complete(cleanupMessages(input), cleanupMaxTokens(input.transcript))
-    const text = sanitizeCleanup(output, input.transcript)
+    const text = sanitizeCleanup(output, input.transcript, input.beforeText)
     const note = text === input.transcript && output.trim() !== input.transcript ? ` (kept transcript; model said ${JSON.stringify(output.trim())})` : ''
     return { text: `${text}${note}`, ms: Math.round(performance.now() - started) }
   } catch (error) {

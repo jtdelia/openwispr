@@ -42,7 +42,10 @@ export interface EndpointConfig {
   apiKey: string
 }
 
-/** `modelId` is `apple` for Apple's on-device model, otherwise a downloaded model's id. */
+/** The Built-in model id of Apple's on-device model, for either role. */
+export const APPLE_MODEL_ID = 'apple'
+
+/** `modelId` is `APPLE_MODEL_ID` for Apple's on-device model, otherwise a downloaded model's id. */
 export type ModelSelection = { kind: 'builtIn'; modelId: string } | ({ kind: 'endpoint' } & EndpointConfig)
 
 export type PublicModelSelection =
@@ -50,6 +53,12 @@ export type PublicModelSelection =
   | ({ kind: 'endpoint'; hasApiKey: boolean } & Omit<EndpointConfig, 'apiKey'>)
 
 export type ModelSelectionPatch = { kind: 'builtIn'; modelId: string } | ({ kind: 'endpoint' } & Partial<EndpointConfig>)
+
+export const APPLE_SELECTION = { kind: 'builtIn', modelId: APPLE_MODEL_ID } as const satisfies ModelSelection
+
+export function isAppleSelection(selection: ModelSelection | PublicModelSelection): boolean {
+  return selection.kind === 'builtIn' && selection.modelId === APPLE_MODEL_ID
+}
 
 export interface Settings {
   speechToText: ModelSelection

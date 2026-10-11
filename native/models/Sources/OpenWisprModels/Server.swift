@@ -1,4 +1,5 @@
 import Foundation
+import Synchronization
 
 protocol SpeechToTextEngine: Sendable {
     /// ISO language codes it transcribes, or nil when it isn't limited to a known set.
@@ -14,6 +15,33 @@ protocol ChatEngine: Sendable {
     func load() async throws
     func complete(_ request: CompleteRequest) async throws -> CompleteResult
     func unload() async
+}
+
+/// Below this many tokens left for the answer, a chat request is treated as too long.
+private let minimumAnswerTokens = 16
+
+/// Tokens left for the answer once the prompt uses `used` of `contextSize`, at most `wanted`. Fails
+/// rather than letting the model truncate the answer.
+func answerBudget(used: Int, contextSize: Int, wanted: Int, modelName: String) throws -> Int {
+    let left = contextSize - used
+    if left < minimumAnswerTokens {
+        throw ModelError.contextExceeded("Too long for \(modelName) (\(used) of \(contextSize) tokens)")
+    }
+    return min(wanted, left)
+}
+
+/// One engine per downloaded model folder, so every request for a model shares one load.
+final class EnginesByFolder<Engine: Sendable>: Sendable {
+    private let engines = Mutex<[URL: Engine]>([:])
+
+    func engine(for model: DownloadedModel, create: (DownloadedModel) -> Engine) -> Engine {
+        engines.withLock { engines in
+            if let engine = engines[model.folder] { return engine }
+            let engine = create(model)
+            engines[model.folder] = engine
+            return engine
+        }
+    }
 }
 
 extension SpeechToTextEngine {

@@ -22,6 +22,10 @@ export function formatBytes(bytes: number): string {
   return `${Math.max(0, Math.round(bytes / 1e3))} KB`
 }
 
+export function percent(done: number, total: number): number {
+  return total > 0 ? Math.floor((done / total) * 100) : 0
+}
+
 export function timeLabel(timestamp: number): string {
   return new Date(timestamp).toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' })
 }

@@ -7,7 +7,7 @@ import type { ModelManifest } from './modelDownloads'
 import type { ModelErrorCode, ModelProcessMessage, ModelProcessTransport, ModelRequest } from './modelProcess'
 import { Models, type ModelSettings } from './models'
 import { RECOMMENDED_MODELS } from './recommendedModels'
-import { loadSettings } from './settings'
+import { applySettingsPatch, loadSettings } from './settings'
 import type { CleanupInput } from './textProcessing'
 
 interface SentRequest {
@@ -154,6 +154,15 @@ describe('Models with Built-in speech-to-text', () => {
       { startMs: 4000, endMs: 5000, text: 'there', speaker: null },
     ])
     expect(process.requests()[0]).toMatchObject({ type: 'transcribe', segments: true })
+  })
+
+  it('treats a Built-in answer without segments as one segment covering the chunk, and no text as none', async () => {
+    const untimed = models(APPLE_SPEECH, undefined, fakeModelProcess(() => ({ result: { text: ' Hi there ' } })).transport)
+    expect(await untimed.models.transcribeSegments(WAV, { durationMs: 5000, prompt: '' })).toEqual([
+      { startMs: 0, endMs: 5000, text: 'Hi there', speaker: null },
+    ])
+    const silent = models(APPLE_SPEECH, undefined, fakeModelProcess(() => ({ result: { text: '', segments: [] } })).transport)
+    expect(await silent.models.transcribeSegments(WAV, { durationMs: 5000, prompt: '' })).toEqual([])
   })
 
   it('starts the model process and loads the model for the language when a dictation starts', async () => {
@@ -500,6 +509,7 @@ const DICTATION: CleanupInput = {
   transcript: 'um so lets meet on tuesday',
   style: 'casual',
   category: 'other',
+  appName: '',
   beforeText: '',
   dictionary: [],
   userName: '',
@@ -622,6 +632,19 @@ describe('Models segments for meetings', () => {
     const silent = withModel('gpt-4o-mini-transcribe', () => Response.json({ text: '' }))
     expect(await silent.models.transcribeSegments(WAV, { durationMs: 5000, prompt: '' })).toEqual([])
   })
+
+  it('falls back to the whole text when a timed reply has no usable segments, and to none when it has no text', async () => {
+    const untimed = withModel('whisper-large-v3-turbo', () => Response.json({ text: 'Hello there', segments: [{ start: 0, end: 1, text: ' ' }] }))
+    expect(await untimed.models.transcribeSegments(WAV, { durationMs: 5000, prompt: '' })).toEqual([
+      { startMs: 0, endMs: 5000, text: 'Hello there', speaker: null },
+    ])
+    const missing = withModel('whisper-large-v3-turbo', () => Response.json({ text: 'Hello there' }))
+    expect(await missing.models.transcribeSegments(WAV, { durationMs: 5000, prompt: '' })).toEqual([
+      { startMs: 0, endMs: 5000, text: 'Hello there', speaker: null },
+    ])
+    const silent = withModel('whisper-large-v3-turbo', () => Response.json({ text: '', segments: [] }))
+    expect(await silent.models.transcribeSegments(WAV, { durationMs: 5000, prompt: '' })).toEqual([])
+  })
 })
 
 describe('Models Endpoint test', () => {
@@ -666,7 +689,7 @@ describe('settings migration', () => {
     userName: 'Jane',
   }
 
-  it('turns the old provider settings into Endpoint selections with the same values', () => {
+  it('turns the old per-role settings into Endpoint selections with the same values', () => {
     const settings = loadSettings(groqFile)
     expect(settings.speechToText).toEqual({
       kind: 'endpoint',
@@ -678,7 +701,7 @@ describe('settings migration', () => {
       kind: 'endpoint',
       baseUrl: 'https://api.groq.com/openai/v1',
       model: 'llama-3.3-70b-versatile',
-      apiKey: '',
+      apiKey: 'enc:groq',
     })
     expect(settings.language).toBe('fr')
     expect(settings.cleanup).toEqual({ enabled: false })
@@ -736,13 +759,27 @@ describe('settings migration', () => {
     expect(local.speechToText).toEqual({ kind: 'endpoint', baseUrl: 'http://localhost:8000/v1', model: 'distil-whisper', apiKey: '' })
   })
 
-  it('keeps chat on the Endpoint whose key it shared with transcription', () => {
+  it('keeps chat on the Endpoint whose key it shared with transcription, with its own copy of the key', () => {
     const settings = loadSettings({
       transcription: { baseUrl: 'https://api.openai.com/v1', model: 'gpt-4o-mini-transcribe', apiKey: 'enc:openai' },
       cleanup: { enabled: true, baseUrl: 'https://api.openai.com/v1', model: 'gpt-4.1-mini', apiKey: '' },
     })
     expect(settings.speechToText).toMatchObject({ kind: 'endpoint', apiKey: 'enc:openai' })
-    expect(settings.chat).toEqual({ kind: 'endpoint', baseUrl: 'https://api.openai.com/v1', model: 'gpt-4.1-mini', apiKey: '' })
+    expect(settings.chat).toEqual({ kind: 'endpoint', baseUrl: 'https://api.openai.com/v1', model: 'gpt-4.1-mini', apiKey: 'enc:openai' })
+  })
+
+  it('keeps sending the shared key to chat after speech-to-text moves to another server', async () => {
+    const migrated = loadSettings({
+      transcription: { baseUrl: 'https://api.openai.com/v1', model: 'gpt-4o-mini-transcribe', apiKey: 'sk-openai' },
+      cleanup: { enabled: true, baseUrl: 'https://api.openai.com/v1', model: 'gpt-4.1-mini', apiKey: '' },
+    })
+    const settings = applySettingsPatch(migrated, {
+      speechToText: { kind: 'endpoint', baseUrl: 'https://api.groq.com/openai/v1', apiKey: 'gsk-groq' },
+    })
+    const { models: m, sent } = models(settings, () => Response.json({ choices: [{ message: { content: 'ok' } }] }))
+    await m.complete([{ role: 'user', content: 'hi' }])
+    expect(sent[0].url).toBe('https://api.openai.com/v1/chat/completions')
+    expect(sent[0].headers.Authorization).toBe('Bearer sk-openai')
   })
 
   it('leaves already-migrated Endpoint selections alone', () => {
@@ -777,7 +814,7 @@ describe('Models availability', () => {
     const cloud = models({ ...ENDPOINTS, speechToText: { ...ENDPOINTS.speechToText, apiKey: '' } }).models
     expect(cloud.availability('speechToText')).toEqual({
       available: false,
-      reason: 'Add a transcription API key in Settings',
+      reason: 'Add a speech-to-text API key in Settings',
     })
     const local = models({ ...ENDPOINTS, speechToText: { kind: 'endpoint', ...keyless } }).models
     expect(local.availability('speechToText')).toEqual({ available: true })

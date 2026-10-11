@@ -1,9 +1,11 @@
 import { useEffect, useState } from 'react'
 import { comboLabel, MODIFIER_KEYS } from '../../../shared/keycodes'
-import { isRunnable, type ModelLibrary, type ModelStatus } from '../../../shared/modelLibrary'
+import { isRunnable, offeredModel, type ModelEngine, type ModelLibrary, type ModelStatus } from '../../../shared/modelLibrary'
 import { microphoneHelp } from '../../../shared/permissions'
 import {
+  APPLE_SELECTION,
   DEFAULT_SHORTCUTS,
+  isAppleSelection,
   SHORTCUT_LABELS,
   type BuiltInStatus,
   type EndpointTestResult,
@@ -14,28 +16,29 @@ import {
   type SettingsPatch,
   type ShortcutAction,
 } from '../../../shared/types'
-import { formatBytes } from '../format'
+import { formatBytes, percent } from '../format'
 import { useData } from '../useData'
 import { ModelsSection } from './ModelsSection'
 
 const api = window.openwispr
 
-interface Preset {
+/** An Endpoint offered by name, with the models it's set up with for each role. */
+interface KnownEndpoint {
   label: string
   baseUrl: string
-  transcriptionModel: string
-  cleanupModel: string
+  speechToTextModel: string
+  chatModel: string
 }
 
 const APPLE_OPTION = 'Apple (on this Mac)'
 const MODEL_OPTION_PREFIX = 'model:'
 
-const PRESETS: Preset[] = [
-  { label: 'OpenAI', baseUrl: 'https://api.openai.com/v1', transcriptionModel: 'gpt-4o-mini-transcribe', cleanupModel: 'gpt-4.1-mini' },
-  { label: 'Groq', baseUrl: 'https://api.groq.com/openai/v1', transcriptionModel: 'whisper-large-v3-turbo', cleanupModel: 'llama-3.3-70b-versatile' },
-  { label: 'Local (Speaches / faster-whisper)', baseUrl: 'http://localhost:8000/v1', transcriptionModel: 'Systran/faster-distil-whisper-large-v3', cleanupModel: '' },
+const KNOWN_ENDPOINTS: KnownEndpoint[] = [
+  { label: 'OpenAI', baseUrl: 'https://api.openai.com/v1', speechToTextModel: 'gpt-4o-mini-transcribe', chatModel: 'gpt-4.1-mini' },
+  { label: 'Groq', baseUrl: 'https://api.groq.com/openai/v1', speechToTextModel: 'whisper-large-v3-turbo', chatModel: 'llama-3.3-70b-versatile' },
+  { label: 'Local (Speaches / faster-whisper)', baseUrl: 'http://localhost:8000/v1', speechToTextModel: 'Systran/faster-distil-whisper-large-v3', chatModel: '' },
 ]
-const CHAT_PRESETS = PRESETS.filter((p) => p.cleanupModel)
+const CHAT_ENDPOINTS = KNOWN_ENDPOINTS.filter((e) => e.chatModel)
 
 /** The Apple Intelligence & Siri pane; there's no deep link to the switch itself. */
 const APPLE_INTELLIGENCE_SETTINGS = 'x-apple.systempreferences:com.apple.Siri-Settings.extension'
@@ -87,7 +90,7 @@ export function SettingsPage() {
         )}
       </section>
 
-      <ProviderSection settings={settings} library={library} />
+      <ModelSections settings={settings} library={library} />
 
       {library && <ModelsSection library={library} settings={settings} />}
 
@@ -142,22 +145,20 @@ function modelOptions(library: ModelLibrary | null, role: ModelRole, selection: 
   )
 }
 
-function ProviderSection({ settings, library }: { settings: PublicSettings; library: ModelLibrary | null }) {
+function ModelSections({ settings, library }: { settings: PublicSettings; library: ModelLibrary | null }) {
   const { speechToText, chat, cleanup } = settings
-  const isAppleSpeech = speechToText.kind === 'builtIn' && speechToText.modelId === 'apple'
-  const isAppleChat = chat.kind === 'builtIn' && chat.modelId === 'apple'
-  const applySpeechPreset = (label: string) => {
+  const isAppleSpeech = isAppleSelection(speechToText)
+  const isAppleChat = isAppleSelection(chat)
+  const selectSpeech = (label: string) => {
     if (selectBuiltIn('speechToText', label)) return
-    const preset = PRESETS.find((p) => p.label === label)
-    if (preset) update({ speechToText: { kind: 'endpoint', baseUrl: preset.baseUrl, model: preset.transcriptionModel } })
+    const endpoint = KNOWN_ENDPOINTS.find((e) => e.label === label)
+    if (endpoint) update({ speechToText: { kind: 'endpoint', baseUrl: endpoint.baseUrl, model: endpoint.speechToTextModel } })
   }
-  const applyChatPreset = (label: string) => {
+  const selectChat = (label: string) => {
     if (selectBuiltIn('chat', label)) return
-    const preset = CHAT_PRESETS.find((p) => p.label === label)
-    if (preset) update({ chat: { kind: 'endpoint', baseUrl: preset.baseUrl, model: preset.cleanupModel } })
+    const endpoint = CHAT_ENDPOINTS.find((e) => e.label === label)
+    if (endpoint) update({ chat: { kind: 'endpoint', baseUrl: endpoint.baseUrl, model: endpoint.chatModel } })
   }
-  const activeSpeechPreset = activePreset(PRESETS, speechToText)
-  const activeChatPreset = activePreset(CHAT_PRESETS, chat)
 
   return (
     <>
@@ -166,12 +167,12 @@ function ProviderSection({ settings, library }: { settings: PublicSettings; libr
         <p className="muted small">
           Apple’s on-device model, a downloaded Built-in model, or any OpenAI-compatible speech-to-text Endpoint.
         </p>
-        <SettingRow title="Provider">
-          <ProviderSelect
-            value={activeSpeechPreset}
+        <SettingRow title="Model or Endpoint">
+          <ModelSelect
+            value={selectedOption(KNOWN_ENDPOINTS, speechToText)}
             models={modelOptions(library, 'speechToText', speechToText)}
-            presets={PRESETS}
-            onChange={applySpeechPreset}
+            endpoints={KNOWN_ENDPOINTS}
+            onChange={selectSpeech}
           />
         </SettingRow>
         <SelectionSettings role="speechToText" selection={speechToText} library={library} />
@@ -200,12 +201,12 @@ function ProviderSection({ settings, library }: { settings: PublicSettings; libr
           checked={cleanup.enabled}
           onChange={(enabled) => update({ cleanup: { enabled } })}
         />
-        <SettingRow title="Provider">
-          <ProviderSelect
-            value={activeChatPreset}
+        <SettingRow title="Model or Endpoint">
+          <ModelSelect
+            value={selectedOption(CHAT_ENDPOINTS, chat)}
             models={modelOptions(library, 'chat', chat)}
-            presets={CHAT_PRESETS}
-            onChange={applyChatPreset}
+            endpoints={CHAT_ENDPOINTS}
+            onChange={selectChat}
           />
         </SettingRow>
         <SelectionSettings
@@ -218,7 +219,7 @@ function ProviderSection({ settings, library }: { settings: PublicSettings; libr
               : undefined
           }
         />
-        {isAppleChat && <AppleChatStatus />}
+        {isAppleChat && <AppleChatStatus library={library} />}
         {chat.kind === 'builtIn' && !isAppleChat && <DownloadedChatStatus modelId={chat.modelId} />}
       </section>
     </>
@@ -228,7 +229,7 @@ function ProviderSection({ settings, library }: { settings: PublicSettings; libr
 /** Selects Apple or a downloaded model when `label` is one of their options. */
 function selectBuiltIn(role: ModelRole, label: string): boolean {
   if (label === APPLE_OPTION) {
-    update({ [role]: { kind: 'builtIn', modelId: 'apple' } })
+    update({ [role]: APPLE_SELECTION })
     return true
   }
   if (label.startsWith(MODEL_OPTION_PREFIX)) {
@@ -238,17 +239,17 @@ function selectBuiltIn(role: ModelRole, label: string): boolean {
   return false
 }
 
-function activePreset(presets: Preset[], selection: PublicModelSelection): string {
+function selectedOption(endpoints: KnownEndpoint[], selection: PublicModelSelection): string {
   if (selection.kind === 'builtIn') {
-    return selection.modelId === 'apple' ? APPLE_OPTION : `${MODEL_OPTION_PREFIX}${selection.modelId}`
+    return isAppleSelection(selection) ? APPLE_OPTION : `${MODEL_OPTION_PREFIX}${selection.modelId}`
   }
-  return presets.find((p) => p.baseUrl === selection.baseUrl)?.label ?? 'Custom'
+  return endpoints.find((e) => e.baseUrl === selection.baseUrl)?.label ?? 'Custom'
 }
 
-function ProviderSelect(props: {
+function ModelSelect(props: {
   value: string
   models?: ModelStatus[]
-  presets: Preset[]
+  endpoints: KnownEndpoint[]
   onChange: (label: string) => void
 }) {
   return (
@@ -259,8 +260,8 @@ function ProviderSelect(props: {
           {model.name} (on this Mac)
         </option>
       ))}
-      {props.presets.map((p) => (
-        <option key={p.label}>{p.label}</option>
+      {props.endpoints.map((e) => (
+        <option key={e.label}>{e.label}</option>
       ))}
       <option disabled>Custom</option>
     </select>
@@ -276,14 +277,14 @@ function SelectionSettings(props: {
   const { role, selection } = props
   switch (selection.kind) {
     case 'builtIn':
-      if (role === 'speechToText' && selection.modelId === 'apple') {
+      if (role === 'speechToText' && isAppleSelection(selection)) {
         return (
           <SettingRow title="Model" description="Apple’s on-device speech-to-text. Your audio never leaves this Mac.">
             <span className="badge ok">Built-in</span>
           </SettingRow>
         )
       }
-      if (role === 'chat' && selection.modelId === 'apple') {
+      if (role === 'chat' && isAppleSelection(selection)) {
         return (
           <SettingRow title="Model" description="Apple Intelligence’s on-device model. Your text never leaves this Mac.">
             <span className="badge ok">Built-in</span>
@@ -336,15 +337,17 @@ const DOWNLOADED_MODEL_TEXT: Record<ModelRole, { private: string; preparing: str
 function DownloadedModel({ role, status }: { role: ModelRole; status: ModelStatus }) {
   const { model, state } = status
   const text = DOWNLOADED_MODEL_TEXT[role]
-  const selectApple = () => update({ [role]: { kind: 'builtIn', modelId: 'apple' } })
+  const useApple = (
+    <button className="link" onClick={() => update({ [role]: APPLE_SELECTION })}>
+      Use Apple
+    </button>
+  )
   switch (state.kind) {
     case 'installed':
       if (!isRunnable(model)) {
         return (
           <SettingRow title="Model" description={`${model.name} needs an engine OpenWispr doesn’t have yet.`}>
-            <button className="button" onClick={selectApple}>
-              Use Apple
-            </button>
+            {useApple}
           </SettingRow>
         )
       }
@@ -364,11 +367,9 @@ function DownloadedModel({ role, status }: { role: ModelRole; status: ModelStatu
       return (
         <SettingRow
           title="Model"
-          description={`Downloading ${model.name}… ${Math.floor((state.bytesDone / Math.max(1, state.totalBytes)) * 100)}%. ${text.usedBy} once it’s installed.`}
+          description={`Downloading ${model.name}… ${percent(state.bytesDone, state.totalBytes)}%. ${text.usedBy} once it’s installed.`}
         >
-          <button className="link" onClick={selectApple}>
-            Use Apple instead
-          </button>
+          {useApple}
         </SettingRow>
       )
     case 'notDownloaded':
@@ -376,9 +377,7 @@ function DownloadedModel({ role, status }: { role: ModelRole; status: ModelStatu
       return (
         <SettingRow title="Model" description={`${model.name} isn’t downloaded yet.`}>
           <div className="secret">
-            <button className="link" onClick={selectApple}>
-              Use Apple
-            </button>
+            {useApple}
             <button className="button" onClick={() => void api.downloadModel(model.id)}>
               {state.kind === 'paused' ? 'Resume' : 'Download'} ({formatBytes(model.sizeBytes)})
             </button>
@@ -393,22 +392,16 @@ function DownloadedModel({ role, status }: { role: ModelRole; status: ModelStatu
 }
 
 /**
- * The Whisper model to offer for a language the selected model lacks: an installed one, or else the first
- * Recommended one this Mac has the memory for.
+ * One click to switch `role` to a downloaded model, downloading it first if needed; the selection row
+ * then shows the download, and the role uses the model once it's installed.
  */
-function whisperOffer(library: ModelLibrary | null): ModelStatus | null {
-  const whisper = (library?.models ?? []).filter((s) => s.model.task === 'speechToText' && s.model.engine === 'whisperKit')
-  return whisper.find((s) => s.state.kind === 'installed') ?? whisper.find((s) => s.recommended && !s.oversized) ?? null
-}
-
-/** One click to switch to a Whisper model, downloading it first if needed. */
-function WhisperOffer({ library }: { library: ModelLibrary | null }) {
-  const offer = whisperOffer(library)
+function ModelOffer({ library, role, engine }: { library: ModelLibrary | null; role: ModelRole; engine?: ModelEngine }) {
+  const offer = offeredModel(library?.models ?? [], role, engine)
   if (!offer) return null
   const { model, state } = offer
   const select = () => {
     if (state.kind !== 'installed') void api.downloadModel(model.id)
-    update({ speechToText: { kind: 'builtIn', modelId: model.id } })
+    update({ [role]: { kind: 'builtIn', modelId: model.id } })
   }
   return (
     <button className="button" onClick={select}>
@@ -479,7 +472,7 @@ function AppleSpeechStatus({ language, library }: { language: string; library: M
           Apple’s speech-to-text doesn’t support {languageName(language)}. On this Mac it supports{' '}
           {supported.join(', ')}. Choose one of these, use a Whisper model, or use an Endpoint for this language.
         </p>
-        <WhisperOffer library={library} />
+        <ModelOffer library={library} role="speechToText" engine="whisperKit" />
       </div>
     )
   }
@@ -493,7 +486,7 @@ function AppleSpeechStatus({ language, library }: { language: string; library: M
 }
 
 /** Whether Apple Intelligence is on, checked again when the user comes back from System Settings. */
-function AppleChatStatus() {
+function AppleChatStatus({ library }: { library: ModelLibrary | null }) {
   const [status, setStatus] = useState<BuiltInStatus['appleChat'] | { error: string } | null>(null)
 
   useEffect(() => {
@@ -517,20 +510,23 @@ function AppleChatStatus() {
     return <p className="muted small">Reads up to {status.contextSize} tokens per request on this Mac.</p>
   }
   return (
-    <p className="error-text small">
-      {status.reason}, so dictations are inserted without Cleanup and meetings get no title or summary.{' '}
-      {status.fix === 'turnOnAppleIntelligence' && (
-        <>
-          Turn it on in{' '}
-          <a href={APPLE_INTELLIGENCE_SETTINGS} target="_blank" rel="noreferrer">
-            System Settings → Apple Intelligence &amp; Siri
-          </a>
-          , or use an Endpoint.{' '}
-        </>
-      )}
-      {status.fix === 'wait' && 'It’s usable once the download finishes. '}
-      You can also download a chat model under Built-in models.
-    </p>
+    <div className="setting-row">
+      <p className="error-text small">
+        {status.reason}, so dictations are inserted without Cleanup and meetings get no title or summary.{' '}
+        {status.fix === 'turnOnAppleIntelligence' && (
+          <>
+            Turn it on in{' '}
+            <a href={APPLE_INTELLIGENCE_SETTINGS} target="_blank" rel="noreferrer">
+              System Settings → Apple Intelligence &amp; Siri
+            </a>
+            , or use an Endpoint.{' '}
+          </>
+        )}
+        {status.fix === 'wait' && 'It’s usable once the download finishes. '}
+        You can also use a chat model downloaded to this Mac.
+      </p>
+      <ModelOffer library={library} role="chat" />
+    </div>
   )
 }
 
@@ -575,7 +571,7 @@ function DownloadedSpeechStatus({ modelId, language, library }: { modelId: strin
         {status.name} doesn’t support {languageName(language)}. It supports {status.languages.map(languageName).join(', ')}.
         Choose one of these, or use a Whisper model or an Endpoint for this language.
       </p>
-      <WhisperOffer library={library} />
+      <ModelOffer library={library} role="speechToText" engine="whisperKit" />
     </div>
   )
 }
