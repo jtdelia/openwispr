@@ -264,6 +264,7 @@ async function main(): Promise<void> {
   })
 
   const status = await permissions()
+  await models.ready
   const needsSetup = !models.availability('speechToText').available || !status.accessibility || status.microphone !== 'granted'
   if (needsSetup || !app.getLoginItemSettings().wasOpenedAtLogin) windows.showHub()
 }

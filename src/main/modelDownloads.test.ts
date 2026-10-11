@@ -4,7 +4,7 @@ import { mkdtemp, readFile, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import type { ModelProcessTransport } from './modelProcess'
+import type { ModelProcessTransport, ModelRequest } from './modelProcess'
 import { Models, type ModelSettings } from './models'
 
 const SETTINGS: ModelSettings = {
@@ -102,17 +102,30 @@ afterEach(async () => {
   await rm(dir, { recursive: true, force: true })
 })
 
-const noModelProcess: ModelProcessTransport = {
-  start: () => {
-    throw new Error('Downloads must not start the model process')
-  },
+/** A model process that answers every request at once, recording them. */
+function recordingModelProcess() {
+  const requests: ModelRequest[] = []
+  const transport: ModelProcessTransport = {
+    start: (handlers) => ({
+      send(request) {
+        requests.push(request)
+        queueMicrotask(() => handlers.message({ type: 'response', id: request.id, result: {} }))
+      },
+      stop: () => queueMicrotask(() => handlers.exit(null)),
+    }),
+  }
+  return { transport, requests }
 }
 
-function models(hub: ReturnType<typeof fakeHub>, physicalMemoryBytes = 32 * GB) {
+function models(
+  hub: ReturnType<typeof fakeHub>,
+  physicalMemoryBytes = 32 * GB,
+  { settings = SETTINGS, transport = recordingModelProcess().transport } = {},
+) {
   return new Models({
     fetch: hub.fetch,
-    settings: () => SETTINGS,
-    transport: noModelProcess,
+    settings: () => settings,
+    transport,
     modelsDir: dir,
     physicalMemoryBytes,
     retryDelayMs: 0,
@@ -297,6 +310,37 @@ describe('Cancelling, removing and disk usage', () => {
     expect((await status(m, 'qwen3-4b-instruct-2507')).state).toEqual({ kind: 'notDownloaded' })
     expect((await status(m, 'whisper-small')).state.kind).toBe('installed')
     expect((await m.library()).diskUsageBytes).toBe(29 + whisperManifest)
+  })
+})
+
+describe('Using a downloaded model', () => {
+  const whisperSmallRepos = () => ({
+    [WHISPERKIT]: { 'openai_whisper-small_216MB/config.json': text('{"d_model":768}') },
+    [WHISPER_SMALL]: { 'tokenizer.json': text('{"model":{}}'), 'tokenizer_config.json': text('{}') },
+  })
+
+  it('makes a speech-to-text model selectable once installed, and loads it right away so its first dictation is quick', async () => {
+    const process = recordingModelProcess()
+    const settings: ModelSettings = { ...SETTINGS, speechToText: { kind: 'builtIn', modelId: 'whisper-small' }, language: 'fr' }
+    const m = models(fakeHub(whisperSmallRepos()), 32 * GB, { settings, transport: process.transport })
+    await m.ready
+    expect(m.availability('speechToText').available).toBe(false)
+
+    await m.download('whisper-small')
+
+    expect(m.availability('speechToText')).toEqual({ available: true })
+    await vi.waitFor(() =>
+      expect(process.requests).toEqual([
+        { id: expect.any(Number), type: 'load', models: [{ role: 'speechToText', id: 'whisper-small', language: 'fr' }] },
+      ]),
+    )
+  })
+
+  it('does not load a downloaded model the model process has no engine for', async () => {
+    const process = recordingModelProcess()
+    await models(fakeHub({ [QWEN]: qwenRepo() }), 32 * GB, { transport: process.transport }).download('qwen3-4b-instruct-2507')
+    await new Promise((resolve) => setTimeout(resolve, 10))
+    expect(process.requests).toEqual([])
   })
 })
 

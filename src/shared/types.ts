@@ -98,8 +98,13 @@ export interface BuiltInStatus {
   }
 }
 
-/** An Apple language-asset download, reported while it runs. */
-export type ModelProgress = { kind: 'appleSpeechAssets'; locale: string; fraction: number }
+/**
+ * An Apple language-asset download, reported while it runs, or a downloaded model's slow first load, which
+ * compiles it for this Mac.
+ */
+export type ModelProgress =
+  | { kind: 'appleSpeechAssets'; locale: string; fraction: number }
+  | { kind: 'preparingModel'; modelId: string; name: string; preparing: boolean }
 
 export interface DictionaryEntry {
   id: string

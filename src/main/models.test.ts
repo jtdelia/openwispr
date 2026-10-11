@@ -1,7 +1,12 @@
-import { describe, expect, it, vi } from 'vitest'
+import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { Settings } from '../shared/types'
+import type { ModelManifest } from './modelDownloads'
 import type { ModelErrorCode, ModelProcessMessage, ModelProcessTransport, ModelRequest } from './modelProcess'
 import { Models, type ModelSettings } from './models'
+import { RECOMMENDED_MODELS } from './recommendedModels'
 import { loadSettings } from './settings'
 
 interface SentRequest {
@@ -75,9 +80,10 @@ function models(
   settings: Partial<Settings> & ModelSettings,
   reply?: (url: string) => Response,
   transport: ModelProcessTransport = fakeModelProcess().transport,
+  modelsDir = '/nonexistent',
 ) {
   const fake = fakeFetch(reply)
-  return { models: new Models({ fetch: fake.fetch, settings: () => settings, transport, modelsDir: '/nonexistent' }), sent: fake.sent }
+  return { models: new Models({ fetch: fake.fetch, settings: () => settings, transport, modelsDir }), sent: fake.sent }
 }
 
 describe('Models routing', () => {
@@ -206,7 +212,7 @@ describe('Models with Built-in speech-to-text', () => {
     const { models: m } = models({ ...APPLE_SPEECH, language: 'nl' }, undefined, process.transport)
     await expect(m.transcribe(WAV, { prompt: '' })).rejects.toMatchObject({
       code: 'unsupportedLanguage',
-      message: "Apple's speech-to-text doesn't support Dutch. Choose another language in Settings",
+      message: "Apple's speech-to-text doesn't support Dutch. Download a Whisper model or choose another language in Settings",
     })
     expect(process.requests()[0]).toMatchObject({ language: 'nl' })
   })
@@ -237,11 +243,145 @@ describe('Models with Built-in speech-to-text', () => {
 })
 
 const PARAKEET = { ...ENDPOINTS, speechToText: { kind: 'builtIn', modelId: 'parakeet-tdt-0.6b-v3' }, language: 'de' } satisfies ModelSettings
+const WHISPER = { ...ENDPOINTS, speechToText: { kind: 'builtIn', modelId: 'whisper-small' }, language: 'nl' } satisfies ModelSettings
 
-describe('Models with a downloaded Parakeet model', () => {
+describe('Models with a downloaded speech-to-text model', () => {
+  let dir: string
+
+  beforeEach(async () => {
+    dir = await mkdtemp(join(tmpdir(), 'openwispr-selection-'))
+  })
+
+  afterEach(async () => {
+    await rm(dir, { recursive: true, force: true })
+  })
+
+  /** Leaves a model folder the way a download does. */
+  async function downloaded(id: string, { installed = true } = {}) {
+    const entry = RECOMMENDED_MODELS.find((m) => m.id === id)
+    if (!entry) throw new Error(`no Recommended model ${id}`)
+    const manifest: ModelManifest = { ...entry, userAdded: false, installed, files: [] }
+    await mkdir(join(dir, id), { recursive: true })
+    await writeFile(join(dir, id, 'manifest.json'), JSON.stringify(manifest))
+  }
+
+  async function selected(settings: ModelSettings, process = fakeModelProcess()) {
+    await downloaded(settings.speechToText.kind === 'builtIn' ? settings.speechToText.modelId : '')
+    const { models: m, sent } = models(settings, undefined, process.transport, dir)
+    await m.ready
+    return { models: m, sent, process }
+  }
+
+  it('transcribes with an installed Whisper model in the model process, with the language and vocabulary hints', async () => {
+    const { models: m, sent, process } = await selected(WHISPER, fakeModelProcess(() => ({ result: { text: ' Hallo daar. ' } })))
+    expect(m.availability('speechToText')).toEqual({ available: true })
+    expect(await m.transcribe(WAV, { prompt: 'Vocabulary: OpenWispr.' })).toBe('Hallo daar.')
+    expect(sent).toHaveLength(0)
+    expect(process.requests()).toEqual([
+      {
+        id: expect.any(Number),
+        type: 'transcribe',
+        model: 'whisper-small',
+        audio: WAV.toString('base64'),
+        language: 'nl',
+        prompt: 'Vocabulary: OpenWispr.',
+        segments: false,
+      },
+    ])
+  })
+
+  it('returns timed Whisper segments for meetings', async () => {
+    const process = fakeModelProcess(() => ({
+      result: { text: ' Hallo. Hoe gaat het?', segments: [{ start: 0, end: 1.2, text: ' Hallo.' }, { start: 1.2, end: 2.6, text: ' Hoe gaat het?' }] },
+    }))
+    const { models: m } = await selected(WHISPER, process)
+    expect(await m.transcribeSegments(WAV, { durationMs: 5000, prompt: '' })).toEqual([
+      { startMs: 0, endMs: 1200, text: 'Hallo.', speaker: null },
+      { startMs: 1200, endMs: 2600, text: 'Hoe gaat het?', speaker: null },
+    ])
+    expect(process.requests()[0]).toMatchObject({ type: 'transcribe', model: 'whisper-small', segments: true })
+  })
+
+  it('reports a selected model that is missing or still downloading as unavailable, without starting the model process', async () => {
+    await downloaded('whisper-small', { installed: false })
+    const process = fakeModelProcess()
+    const { models: m } = models(WHISPER, undefined, process.transport, dir)
+    await m.ready
+    const reason = "Whisper small isn't downloaded. Download it or choose another speech-to-text model in Settings"
+    expect(m.availability('speechToText')).toEqual({ available: false, reason })
+    await expect(m.transcribe(WAV, { prompt: '' })).rejects.toThrow(reason)
+    m.warmUp()
+    await m.status()
+    expect(process.requests()).toEqual([{ id: expect.any(Number), type: 'status', language: 'nl' }])
+  })
+
+  it('loads the selected model when a dictation starts, and reports it as preparing while a slow first load runs', async () => {
+    const process = fakeModelProcess((request) => (request.type === 'load' ? undefined : { result: { text: 'hoi' } }))
+    const { models: m } = await selected(WHISPER, process)
+    const progress: unknown[] = []
+    m.on('progress', (p) => progress.push(p))
+    const preparing = async () => (await m.library()).models.find((s) => s.model.id === 'whisper-small')?.preparing
+    vi.useFakeTimers()
+    try {
+      m.warmUp()
+      m.warmUp()
+      expect(process.requests()).toEqual([
+        { id: expect.any(Number), type: 'load', models: [{ role: 'speechToText', id: 'whisper-small', language: 'nl' }] },
+      ])
+      await vi.advanceTimersByTimeAsync(500)
+      expect(progress).toEqual([])
+      await vi.advanceTimersByTimeAsync(500)
+      expect(progress).toEqual([{ kind: 'preparingModel', modelId: 'whisper-small', name: 'Whisper small', preparing: true }])
+      expect(await preparing()).toBe(true)
+
+      process.connections[0].send({ type: 'response', id: process.requests()[0].id, result: {} })
+      await vi.advanceTimersByTimeAsync(0)
+      expect(progress.at(-1)).toEqual({ kind: 'preparingModel', modelId: 'whisper-small', name: 'Whisper small', preparing: false })
+      expect(await preparing()).toBe(false)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('does not report a quick load as preparing', async () => {
+    const { models: m } = await selected(WHISPER)
+    const progress: unknown[] = []
+    m.on('progress', (p) => progress.push(p))
+    vi.useFakeTimers()
+    try {
+      m.warmUp()
+      await vi.advanceTimersByTimeAsync(5000)
+      expect(progress).toEqual([])
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('refuses to remove the selected model, but removes others', async () => {
+    await downloaded('whisper-large-v3-turbo')
+    const { models: m } = await selected(WHISPER)
+    await expect(m.removeModel('whisper-small')).rejects.toThrow(
+      'Whisper small is selected for speech-to-text. Choose another model in Settings before removing it',
+    )
+    expect(m.availability('speechToText')).toEqual({ available: true })
+    expect(await m.removeModel('whisper-large-v3-turbo')).toBeGreaterThan(0)
+    expect((await m.library()).models.find((s) => s.model.id === 'whisper-large-v3-turbo')?.state).toEqual({ kind: 'notDownloaded' })
+  })
+
+  it('does not offer to download Whisper when Whisper itself lacks the language', async () => {
+    const process = fakeModelProcess(() => ({ error: { code: 'unsupportedLanguage', message: "Whisper small doesn't support Klingon" } }))
+    const { models: m } = await selected({ ...WHISPER, language: 'tlh' }, process)
+    await expect(m.transcribe(WAV, { prompt: '' })).rejects.toThrow("Whisper small doesn't support Klingon. Choose another language in Settings")
+  })
+
+  it('reports an installed model that is not for speech-to-text as unavailable', async () => {
+    const { models: m } = await selected({ ...WHISPER, speechToText: { kind: 'builtIn', modelId: 'qwen3-4b-instruct-2507' } })
+    expect(m.availability('speechToText')).toMatchObject({ available: false, reason: expect.stringMatching(/isn't a speech-to-text model/) })
+  })
+
   it('sends dictations to the Parakeet model in the model process', async () => {
     const process = fakeModelProcess(() => ({ result: { text: ' Guten Morgen. ' } }))
-    const { models: m, sent } = models(PARAKEET, undefined, process.transport)
+    const { models: m, sent } = await selected(PARAKEET, process)
     expect(m.availability('speechToText')).toEqual({ available: true })
     m.warmUp()
     expect(await m.transcribe(WAV, { prompt: 'Jane' })).toBe('Guten Morgen.')
@@ -264,7 +404,7 @@ describe('Models with a downloaded Parakeet model', () => {
     const process = fakeModelProcess(() => ({
       result: { text: 'Hallo. Wie geht es?', segments: [{ start: 0.2, end: 1.1, text: 'Hallo.' }, { start: 1.6, end: 2.8, text: 'Wie geht es?' }] },
     }))
-    const { models: m } = models(PARAKEET, undefined, process.transport)
+    const { models: m } = await selected(PARAKEET, process)
     expect(await m.transcribeSegments(WAV, { durationMs: 5000, prompt: '' })).toEqual([
       { startMs: 200, endMs: 1100, text: 'Hallo.', speaker: null },
       { startMs: 1600, endMs: 2800, text: 'Wie geht es?', speaker: null },
@@ -278,7 +418,7 @@ describe('Models with a downloaded Parakeet model', () => {
       speechToText: { model: 'parakeet-tdt-0.6b-v3', name: 'Parakeet TDT v3', supported: false, languages: ['de', 'en'] },
     }
     const process = fakeModelProcess(() => ({ result: status }))
-    const { models: m } = models({ ...PARAKEET, language: 'ja' }, undefined, process.transport)
+    const { models: m } = await selected({ ...PARAKEET, language: 'ja' }, process)
     expect(await m.status()).toEqual(status)
     expect(process.requests()).toEqual([{ id: expect.any(Number), type: 'status', language: 'ja', speechToText: 'parakeet-tdt-0.6b-v3' }])
   })
@@ -287,10 +427,10 @@ describe('Models with a downloaded Parakeet model', () => {
     const process = fakeModelProcess(() => ({
       error: { code: 'unsupportedLanguage', message: "Parakeet TDT v3 doesn't support Japanese" },
     }))
-    const { models: m } = models({ ...PARAKEET, language: 'ja' }, undefined, process.transport)
+    const { models: m } = await selected({ ...PARAKEET, language: 'ja' }, process)
     await expect(m.transcribe(WAV, { prompt: '' })).rejects.toMatchObject({
       code: 'unsupportedLanguage',
-      message: "Parakeet TDT v3 doesn't support Japanese. Choose another language in Settings",
+      message: "Parakeet TDT v3 doesn't support Japanese. Download a Whisper model or choose another language in Settings",
     })
   })
 })
@@ -451,17 +591,11 @@ describe('Models availability', () => {
     expect(local.availability('speechToText')).toEqual({ available: true })
   })
 
-  it('reports Built-in chat and downloaded speech-to-text models as unavailable until they ship', async () => {
+  it('reports Built-in chat models as unavailable until they ship', async () => {
     const process = fakeModelProcess()
-    const { models: m, sent } = models(
-      { ...ENDPOINTS, speechToText: { kind: 'builtIn', modelId: 'whisper-small' }, chat: { kind: 'builtIn', modelId: 'apple' } },
-      undefined,
-      process.transport,
-    )
+    const { models: m, sent } = models({ ...ENDPOINTS, chat: { kind: 'builtIn', modelId: 'apple' } }, undefined, process.transport)
     expect(m.availability('chat')).toEqual({ available: false, reason: 'Built-in models are not available yet' })
-    expect(m.availability('speechToText')).toEqual({ available: false, reason: 'Built-in models are not available yet' })
     await expect(m.complete([{ role: 'user', content: 'hi' }])).rejects.toThrow('Built-in models are not available yet')
-    await expect(m.transcribe(WAV, { prompt: '' })).rejects.toThrow('Built-in models are not available yet')
     expect(sent).toHaveLength(0)
     expect(process.requests()).toHaveLength(0)
   })

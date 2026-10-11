@@ -2,6 +2,7 @@ import { EventEmitter } from 'node:events'
 import { totalmem } from 'node:os'
 import {
   isLocalEndpoint,
+  MODEL_ROLES,
   type BuiltInStatus,
   type EndpointConfig,
   type EndpointTestResult,
@@ -9,8 +10,8 @@ import {
   type ModelRole,
   type Settings,
 } from '../shared/types'
-import type { ModelEngine, ModelEntry, ModelLibrary, ModelStatus } from '../shared/modelLibrary'
-import { ModelDownloads } from './modelDownloads'
+import { isRunnable, type ModelEntry, type ModelLibrary, type ModelStatus } from '../shared/modelLibrary'
+import { ModelDownloads, type ModelManifest } from './modelDownloads'
 import { ModelError, ModelProcess, type ModelProcessTransport, type TranscribeResult } from './modelProcess'
 import { RECOMMENDED_MODELS } from './recommendedModels'
 import {
@@ -45,10 +46,11 @@ export interface ModelsDeps {
 }
 
 const APPLE = 'apple'
-/** Engines of downloaded speech-to-text models that the model process can run. */
-const PROCESS_SPEECH_ENGINES = new Set<ModelEngine>(['fluidAudio'])
+const ROLE_NAMES: Record<ModelRole, string> = { speechToText: 'speech-to-text', chat: 'chat' }
 const BUILT_IN_UNAVAILABLE = 'Built-in models are not available yet'
 const TEST_TIMEOUT_MS = 20_000
+/** Loads that take longer are compiling the model for this Mac, which the first use of a Core ML model does. */
+const PREPARING_AFTER_MS = 1000
 /** A model needing more than this share of physical memory would likely make the Mac swap. */
 const MEMORY_SHARE = 0.6
 
@@ -76,6 +78,11 @@ export class Models extends EventEmitter<{ progress: [ModelProgress] }> {
   private readonly process: ModelProcess
   private readonly libraryListeners = new Set<() => void>()
   private readonly downloads: ModelDownloads
+  private installed = new Map<string, ModelManifest>()
+  private readonly loads = new Map<string, Promise<void>>()
+  private readonly preparing = new Set<string>()
+  /** Resolves once the installed models have been read, which `availability` relies on. */
+  readonly ready: Promise<void>
 
   constructor(private readonly deps: ModelsDeps) {
     super()
@@ -84,8 +91,9 @@ export class Models extends EventEmitter<{ progress: [ModelProgress] }> {
       fetch: deps.fetch,
       dir: deps.modelsDir,
       retryDelayMs: deps.retryDelayMs ?? 2000,
-      onChange: () => this.libraryListeners.forEach((listener) => listener()),
+      onChange: () => this.libraryChanged(),
     })
+    this.ready = this.refreshInstalled()
   }
 
   /** Recommended models and the ones the user added, with their download state and disk usage. */
@@ -97,6 +105,7 @@ export class Models extends EventEmitter<{ progress: [ModelProgress] }> {
       userAdded,
       oversized: model.memoryBytes > physicalMemoryBytes * MEMORY_SHARE,
       state: await this.downloads.state(model.id),
+      preparing: this.preparing.has(model.id),
     })
     const added = (await this.downloads.manifests()).filter((manifest) => manifest.userAdded)
     return {
@@ -115,21 +124,41 @@ export class Models extends EventEmitter<{ progress: [ModelProgress] }> {
     return () => this.libraryListeners.delete(listener)
   }
 
-  /** Downloads or resumes a Recommended model; resolves once installed or cancelled. */
-  download(id: string): Promise<void> {
+  /**
+   * Downloads or resumes a Recommended model; resolves once installed or cancelled. An installed
+   * speech-to-text model is then loaded, so the slow first load doesn't land on its first dictation.
+   */
+  async download(id: string): Promise<void> {
     const model = RECOMMENDED_MODELS.find((m) => m.id === id)
-    if (!model) return Promise.reject(new Error(`Unknown model ${id}`))
-    return this.downloads.start(model, { userAdded: false })
+    if (!model) throw new Error(`Unknown model ${id}`)
+    await this.downloads.start(model, { userAdded: false })
+    await this.refreshInstalled()
+    const installed = this.installed.get(id)
+    if (installed?.task === 'speechToText' && isRunnable(installed)) {
+      this.prepare(id).catch((error: unknown) => console.warn('[models] preparing a downloaded model failed', error))
+    }
   }
 
   /** Stops a download and discards what it fetched. */
-  cancelDownload(id: string): Promise<void> {
-    return this.downloads.cancel(id)
+  async cancelDownload(id: string): Promise<void> {
+    await this.downloads.cancel(id)
+    await this.refreshInstalled()
   }
 
-  /** Deletes a downloaded model; returns the bytes freed. */
-  removeModel(id: string): Promise<number> {
-    return this.downloads.remove(id)
+  /** Deletes a downloaded model; returns the bytes freed. The selected model of a role can't be removed. */
+  async removeModel(id: string): Promise<number> {
+    const settings = this.deps.settings()
+    const role = MODEL_ROLES.find((r) => {
+      const selection = settings[r]
+      return selection.kind === 'builtIn' && selection.modelId === id
+    })
+    if (role) {
+      const name = this.installed.get(id)?.name ?? id
+      throw new Error(`${name} is selected for ${ROLE_NAMES[role]}. Choose another model in Settings before removing it`)
+    }
+    const freed = await this.downloads.remove(id)
+    await this.refreshInstalled()
+    return freed
   }
 
   /**
@@ -139,9 +168,9 @@ export class Models extends EventEmitter<{ progress: [ModelProgress] }> {
   availability(role: ModelRole): Availability {
     const config = this.resolve(role)
     if (config === null) {
-      return role === 'speechToText' && this.builtInSpeechModel() !== null
-        ? { available: true }
-        : { available: false, reason: BUILT_IN_UNAVAILABLE }
+      if (role === 'chat') return { available: false, reason: BUILT_IN_UNAVAILABLE }
+      const speech = this.builtInSpeech()
+      return speech === null || 'model' in speech ? { available: true } : { available: false, reason: speech.unavailable }
     }
     switch (role) {
       case 'speechToText':
@@ -174,11 +203,13 @@ export class Models extends EventEmitter<{ progress: [ModelProgress] }> {
   /** A dictation has started: have the selected Built-in models loaded by the time its audio arrives. */
   warmUp(): void {
     const { language } = this.deps.settings()
-    const model = this.builtInSpeechModel()
-    if (model === null) return
-    this.process
-      .request({ type: 'load', models: [{ role: 'speechToText', id: model, language }] })
-      .catch((error: unknown) => console.warn('[models] warm-up failed', error))
+    const speech = this.builtInSpeech()
+    if (speech === null || !('model' in speech)) return
+    const load =
+      speech.model === APPLE
+        ? this.process.request({ type: 'load', models: [{ role: 'speechToText', id: APPLE, language }] })
+        : this.prepare(speech.model)
+    load.catch((error: unknown) => console.warn('[models] warm-up failed', error))
   }
 
   /** Like `transcribe`, but keeps segment timing and, for diarizing Endpoints, speaker labels. */
@@ -198,8 +229,9 @@ export class Models extends EventEmitter<{ progress: [ModelProgress] }> {
    */
   async status(): Promise<BuiltInStatus> {
     const { language } = this.deps.settings()
-    const model = this.builtInSpeechModel()
-    return this.process.request({ type: 'status', language, ...(model !== null && model !== APPLE && { speechToText: model }) })
+    const speech = this.builtInSpeech()
+    const model = speech !== null && 'model' in speech && speech.model !== APPLE ? speech.model : null
+    return this.process.request({ type: 'status', language, ...(model !== null && { speechToText: model }) })
   }
 
   /** Stops the model process; the next Built-in request starts it again. */
@@ -247,19 +279,73 @@ export class Models extends EventEmitter<{ progress: [ModelProgress] }> {
       return await this.process.request({ type: 'transcribe', model, audio: wav.toString('base64'), language, prompt, segments })
     } catch (error) {
       if (error instanceof ModelError && error.code === 'unsupportedLanguage') {
-        throw new ModelError(error.code, `${error.message}. Choose another language in Settings`)
+        const isWhisper = this.installed.get(model)?.engine === 'whisperKit'
+        const hint = isWhisper ? 'Choose another language' : 'Download a Whisper model or choose another language'
+        throw new ModelError(error.code, `${error.message}. ${hint} in Settings`)
       }
       throw error
     }
   }
 
-  /** The Built-in speech-to-text model to use, or null when an Endpoint or a not-yet-supported model is selected. */
+  /** The Built-in speech-to-text model to use, or null when an Endpoint is selected; throws when it can't be used. */
   private builtInSpeechModel(): string | null {
+    const speech = this.builtInSpeech()
+    if (speech === null) return null
+    if ('unavailable' in speech) throw new Error(speech.unavailable)
+    return speech.model
+  }
+
+  /** The selected Built-in speech-to-text model, or why it can't be used; null when an Endpoint is selected. */
+  private builtInSpeech(): { model: string } | { unavailable: string } | null {
     const selection = this.deps.settings().speechToText
     if (selection.kind !== 'builtIn') return null
-    if (selection.modelId === APPLE) return APPLE
-    const entry = RECOMMENDED_MODELS.find((m) => m.id === selection.modelId && m.task === 'speechToText')
-    return entry && PROCESS_SPEECH_ENGINES.has(entry.engine) ? entry.id : null
+    const id = selection.modelId
+    if (id === APPLE) return { model: APPLE }
+    const manifest = this.installed.get(id)
+    if (!manifest) {
+      const name = RECOMMENDED_MODELS.find((m) => m.id === id)?.name ?? id
+      return { unavailable: `${name} isn't downloaded. Download it or choose another speech-to-text model in Settings` }
+    }
+    if (manifest.task !== 'speechToText') return { unavailable: `${manifest.name} isn't a speech-to-text model` }
+    if (!isRunnable(manifest)) {
+      return { unavailable: `${manifest.name} needs an engine OpenWispr doesn't have yet. Choose another speech-to-text model in Settings` }
+    }
+    return { model: id }
+  }
+
+  /** Loads a downloaded model in the model process, reporting it as preparing while a slow first load runs. */
+  private prepare(id: string): Promise<void> {
+    const running = this.loads.get(id)
+    if (running) return running
+    const name = this.installed.get(id)?.name ?? id
+    const { language } = this.deps.settings()
+    const timer = setTimeout(() => this.setPreparing(id, name, true), PREPARING_AFTER_MS)
+    const load = this.process
+      .request({ type: 'load', models: [{ role: 'speechToText', id, language }] })
+      .then(() => undefined)
+      .finally(() => {
+        clearTimeout(timer)
+        this.loads.delete(id)
+        if (this.preparing.has(id)) this.setPreparing(id, name, false)
+      })
+    this.loads.set(id, load)
+    return load
+  }
+
+  private setPreparing(modelId: string, name: string, preparing: boolean): void {
+    if (preparing) this.preparing.add(modelId)
+    else this.preparing.delete(modelId)
+    this.emit('progress', { kind: 'preparingModel', modelId, name, preparing })
+    this.libraryChanged()
+  }
+
+  private libraryChanged(): void {
+    this.libraryListeners.forEach((listener) => listener())
+  }
+
+  private async refreshInstalled(): Promise<void> {
+    const manifests = await this.downloads.manifests()
+    this.installed = new Map(manifests.filter((m) => m.installed).map((m) => [m.id, m]))
   }
 
   /** The Endpoint serving `role`, or null when a Built-in model is selected. */

@@ -7,6 +7,17 @@ export const MODEL_TASKS: ModelTask[] = ['speechToText', 'chat', 'vision']
 
 export type ModelEngine = 'whisperKit' | 'fluidAudio' | 'mlx'
 
+/** Engines the model process can run, per task; installed models of other engines can't be selected yet. */
+export const RUNNABLE_ENGINES: Record<ModelTask, ModelEngine[]> = {
+  speechToText: ['whisperKit', 'fluidAudio'],
+  chat: [],
+  vision: [],
+}
+
+export function isRunnable(model: Pick<ModelEntry, 'task' | 'engine'>): boolean {
+  return RUNNABLE_ENGINES[model.task].includes(model.engine)
+}
+
 export type SpeedTier = 'fastest' | 'fast' | 'medium' | 'slow'
 
 /**
@@ -57,6 +68,8 @@ export interface ModelStatus {
   /** Its memory estimate exceeds about 60% of this Mac's memory, so it would likely thrash. */
   oversized: boolean
   state: DownloadState
+  /** Installed and loading for the first time, which compiles it for this Mac and can take minutes. */
+  preparing: boolean
 }
 
 export interface ModelLibrary {
