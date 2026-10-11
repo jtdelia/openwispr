@@ -1,0 +1,32 @@
+{
+  "name": "openwispr",
+  "productName": "OpenWispr",
+  "version": "0.1.0",
+  "description": "Open-source voice dictation for macOS, modeled on Wispr Flow",
+  "license": "MIT",
+  "main": "out/main/index.js",
+  "scripts": {
+    "setup": "node node_modules/electron/install.js && npm run helper:build",
+    "dev": "npm run helper:build && electron-vite dev",
+    "build": "npm run helper:build && electron-vite build",
+    "start": "electron-vite preview",
+    "helper:build": "swift build -c release --package-path native/helper",
+    "typecheck": "tsc --noEmit -p tsconfig.node.json && tsc --noEmit -p tsconfig.web.json",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "react": "^19.3.0",
+    "react-dom": "^19.3.0"
+  },
+  "devDependencies": {
+    "@types/node": "^26.6.5",
+    "@types/react": "^19.3.0",
+    "@types/react-dom": "^19.3.0",
+    "@vitejs/plugin-react": "^5.2.0",
+    "electron": "^44.7.0",
+    "electron-vite": "^5.0.0",
+    "typescript": "^7.0.2",
+    "vite": "^7.3.7",
+    "vitest": "^3.2.7"
+  }
+}

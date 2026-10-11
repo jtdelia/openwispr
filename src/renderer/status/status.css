@@ -1,0 +1,171 @@
+html,
+body,
+#root {
+  margin: 0;
+  height: 100%;
+  background: transparent;
+  overflow: hidden;
+  font-family: -apple-system, BlinkMacSystemFont, 'SF Pro Text', sans-serif;
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+.stage {
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+  padding-bottom: 4px;
+  box-sizing: border-box;
+}
+
+.pill {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  height: 34px;
+  padding: 0 12px;
+  border-radius: 999px;
+  background: rgba(17, 17, 17, 0.92);
+  border: 1px solid rgba(255, 255, 255, 0.16);
+  box-shadow: 0 6px 24px rgba(0, 0, 0, 0.28);
+  color: #fff;
+  transition:
+    width 180ms ease,
+    height 180ms ease,
+    padding 180ms ease,
+    background 180ms ease;
+}
+
+.pill-resting {
+  width: 44px;
+  height: 9px;
+  padding: 0;
+  background: rgba(17, 17, 17, 0.55);
+  box-shadow: none;
+  cursor: pointer;
+}
+
+.pill-resting.hovered {
+  width: 96px;
+  height: 26px;
+  background: rgba(17, 17, 17, 0.92);
+}
+
+.pill-hidden {
+  display: none;
+}
+
+.pill-processing {
+  width: 72px;
+}
+
+.pill-notice {
+  padding: 0 16px;
+  font-size: 12.5px;
+  max-width: 340px;
+}
+
+.pill-notice.tone-error {
+  background: rgba(150, 28, 28, 0.95);
+}
+
+.notice {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.bars {
+  display: flex;
+  align-items: center;
+  gap: 2.5px;
+  height: 20px;
+}
+
+.bars span {
+  width: 3px;
+  border-radius: 2px;
+  background: #fff;
+  transition: height 60ms linear;
+}
+
+.bars.idle span {
+  height: 3px !important;
+  opacity: 0.55;
+}
+
+.icon-button {
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  border: none;
+  display: grid;
+  place-items: center;
+  cursor: pointer;
+  font-size: 10px;
+  color: #fff;
+  background: rgba(255, 255, 255, 0.16);
+}
+
+.icon-button.stop {
+  background: #e5484d;
+}
+
+.icon-button.stop span {
+  width: 8px;
+  height: 8px;
+  border-radius: 2px;
+  background: #fff;
+}
+
+.dots {
+  display: flex;
+  gap: 5px;
+}
+
+.dots span {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: #fff;
+  animation: pulse 900ms infinite ease-in-out;
+}
+
+.dots span:nth-child(2) {
+  animation-delay: 150ms;
+}
+
+.dots span:nth-child(3) {
+  animation-delay: 300ms;
+}
+
+@keyframes pulse {
+  0%,
+  100% {
+    opacity: 0.25;
+    transform: scale(0.8);
+  }
+  50% {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+
+.tooltip {
+  font-size: 12px;
+  color: #fff;
+  background: rgba(17, 17, 17, 0.92);
+  padding: 6px 10px;
+  border-radius: 8px;
+}
+
+.tooltip kbd {
+  font-family: inherit;
+  background: rgba(255, 255, 255, 0.18);
+  border-radius: 4px;
+  padding: 1px 5px;
+}
