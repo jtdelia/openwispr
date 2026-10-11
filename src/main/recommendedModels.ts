@@ -2,9 +2,9 @@ import type { ModelEntry } from '../shared/modelLibrary'
 
 const WHISPERKIT_REPO = { repo: 'argmaxinc/whisperkit-coreml', revision: '0f63a7800b00dd0226abd051b906c246e1907482' }
 // WhisperKit model folders ship without a tokenizer and fetch one at load time unless it sits beside them.
-const WHISPER_TOKENIZER = ['tokenizer.json', 'tokenizer_config.json']
+export const WHISPER_TOKENIZER = ['tokenizer.json', 'tokenizer_config.json']
 
-const PARAKEET_LANGUAGES = [
+export const PARAKEET_LANGUAGES = [
   'bg', 'cs', 'da', 'de', 'el', 'en', 'es', 'et', 'fi', 'fr', 'hr', 'hu', 'it',
   'lt', 'lv', 'mt', 'nl', 'pl', 'pt', 'ro', 'ru', 'sk', 'sl', 'sv', 'uk',
 ]

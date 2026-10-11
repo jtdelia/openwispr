@@ -412,6 +412,14 @@ textarea {
   gap: 12px;
 }
 
+.model-check {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 6px;
+  margin-top: 8px;
+}
+
 .settings-section {
   display: flex;
   flex-direction: column;

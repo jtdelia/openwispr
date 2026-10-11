@@ -72,6 +72,29 @@ export interface ModelStatus {
   preparing: boolean
 }
 
+/**
+ * Why a Hugging Face repo can't be added. Without an account, Hugging Face answers a private repo exactly
+ * like a missing one, so the two share `notFoundOrPrivate`.
+ */
+export type RepoRejection =
+  | 'invalidReference'
+  | 'notFoundOrPrivate'
+  | 'gated'
+  | 'ggufOnly'
+  | 'notMlx'
+  | 'unsupportedArchitecture'
+  | 'missingFiles'
+  | 'alreadyListed'
+  | 'hubFailed'
+
+/** The compatibility check of a pasted repo id or URL, made before anything is downloaded. */
+export type RepoCheck =
+  /** `oversized` as in `ModelStatus`. */
+  | { kind: 'compatible'; model: ModelEntry; summary: string; oversized: boolean }
+  /** A repo holding several speech-to-text models, like WhisperKit's; one folder must be chosen. */
+  | { kind: 'severalModels'; repo: string; revision: string; folders: string[]; message: string }
+  | { kind: 'rejected'; reason: RepoRejection; message: string }
+
 export interface ModelLibrary {
   models: ModelStatus[]
   /** Everything under the models folder, partial downloads included. */

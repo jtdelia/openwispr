@@ -124,6 +124,13 @@ async function main(): Promise<void> {
   })
   ipcMain.handle(Channel.cancelDownload, (_e, id: string) => models.cancelDownload(id))
   ipcMain.handle(Channel.removeModel, (_e, id: string) => models.removeModel(id))
+  ipcMain.handle(Channel.checkHubRepo, (_e, input: string) => models.checkRepo(String(input)))
+  ipcMain.handle(Channel.addHubModel, async (_e, input: string) => {
+    const check = await models.checkRepo(String(input))
+    // As for Recommended models, a failure is shown from the library state.
+    if (check.kind === 'compatible') void models.addModel(check.model).catch(() => undefined)
+    return check
+  })
   ipcMain.handle(Channel.getHistory, () => store.getHistory())
   ipcMain.handle(Channel.deleteHistoryEntry, (_e, id: string) => {
     store.deleteHistory(id)
