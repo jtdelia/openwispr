@@ -8,7 +8,10 @@ export default {
   files: ['out/**/*', 'package.json'],
   directories: { output: 'dist' },
   // Every native executable the main process spawns, launched from Resources when packaged.
-  extraResources: [{ from: 'native/helper/.build/release/openwispr-helper', to: 'openwispr-helper' }],
+  extraResources: [
+    { from: 'native/helper/.build/release/openwispr-helper', to: 'openwispr-helper' },
+    { from: 'native/models/.build/release/openwispr-models', to: 'openwispr-models' },
+  ],
   mac: {
     target: 'dir',
     category: 'public.app-category.productivity',
