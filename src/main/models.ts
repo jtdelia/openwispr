@@ -10,7 +10,8 @@ import {
   type ModelRole,
   type Settings,
 } from '../shared/types'
-import { isRunnable, type ModelEntry, type ModelLibrary, type ModelStatus } from '../shared/modelLibrary'
+import { isRunnable, type ModelEntry, type ModelLibrary, type ModelStatus, type RepoCheck } from '../shared/modelLibrary'
+import { checkHubRepo } from './hubCompatibility'
 import { ModelDownloads, type ModelManifest } from './modelDownloads'
 import { ModelError, ModelProcess, type ModelProcessTransport, type ModelRef, type TranscribeResult } from './modelProcess'
 import { RECOMMENDED_MODELS } from './recommendedModels'
@@ -158,14 +159,22 @@ export class Models extends EventEmitter<{ progress: [ModelProgress] }> {
    * speech-to-text model is then loaded, so the slow first load doesn't land on its first dictation.
    */
   async download(id: string): Promise<void> {
-    const model = RECOMMENDED_MODELS.find((m) => m.id === id)
-    if (!model) throw new Error(`Unknown model ${id}`)
-    await this.downloads.start(model, { userAdded: false })
-    await this.refreshInstalled()
-    const installed = this.installed.get(id)
-    if (installed?.task === 'speechToText' && isRunnable(installed)) {
-      this.prepare('speechToText', id).catch((error: unknown) => console.warn('[models] preparing a downloaded model failed', error))
-    }
+    const recommended = RECOMMENDED_MODELS.find((m) => m.id === id)
+    if (recommended) return this.install(recommended, false)
+    const added = (await this.downloads.manifests()).find((m) => m.id === id && m.userAdded)
+    if (!added) throw new Error(`Unknown model ${id}`)
+    const { userAdded, installed, files, ...model } = added
+    return this.install(model, true)
+  }
+
+  /** Checks a pasted Hugging Face repo id or URL without downloading any weights. */
+  checkRepo(input: string): Promise<RepoCheck> {
+    return checkHubRepo(this.deps.fetch, input)
+  }
+
+  /** Downloads a model `checkRepo` accepted; it's listed as added by the user, and resumes like a Recommended one. */
+  addModel(model: ModelEntry): Promise<void> {
+    return this.install(model, true)
   }
 
   /** Stops a download and discards what it fetched. */
@@ -418,6 +427,17 @@ export class Models extends EventEmitter<{ progress: [ModelProgress] }> {
     else this.preparing.delete(modelId)
     this.emit('progress', { kind: 'preparingModel', modelId, name, preparing })
     this.libraryChanged()
+  }
+
+  private async install(model: ModelEntry, userAdded: boolean): Promise<void> {
+    await this.downloads.start(model, { userAdded })
+    await this.refreshInstalled()
+    const installed = this.installed.get(model.id)
+    if (installed?.task === 'speechToText' && isRunnable(installed)) {
+      this.prepare('speechToText', model.id).catch((error: unknown) =>
+        console.warn('[models] preparing a downloaded model failed', error),
+      )
+    }
   }
 
   private libraryChanged(): void {

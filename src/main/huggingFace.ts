@@ -24,10 +24,22 @@ interface TreeEntry {
   lfs?: { oid: string; size: number }
 }
 
+/** What the info call says about a repo at a revision. */
+export interface RepoInfo {
+  /** The commit to pin. */
+  sha: string
+  /** Gated repos need an account their owner approved, even to download. */
+  gated: boolean
+  /** ISO codes from the model card, when it lists them. */
+  languages: string[]
+}
+
 export class HubError extends Error {
   constructor(
     message: string,
     readonly status: number,
+    /** Hugging Face's `x-error-code`, like `GatedRepo` or `EntryNotFound`. */
+    readonly code: string | null = null,
   ) {
     super(message)
   }
@@ -36,6 +48,27 @@ export class HubError extends Error {
   get retryable(): boolean {
     return this.status === 429 || this.status >= 500
   }
+}
+
+/** `revision` is a branch, tag or sha; without it, the head of the default branch. */
+export async function repoInfo(fetch: Fetch, repo: string, revision?: string): Promise<RepoInfo> {
+  const url = `${HUB}/api/models/${repo}${revision ? `/revision/${encodeURIComponent(revision)}` : ''}`
+  const res = await fetch(url, { headers: HUB_HEADERS })
+  if (!res.ok) throw await hubError(res, repo)
+  const body = (await res.json()) as { sha: string; gated?: false | string; cardData?: { language?: string | string[] } }
+  const language = body.cardData?.language
+  return {
+    sha: body.sha,
+    gated: Boolean(body.gated),
+    languages: typeof language === 'string' ? [language] : Array.isArray(language) ? language : [],
+  }
+}
+
+/** A small file's text, like `config.json`; never use it for weights. */
+export async function readRepoFile(fetch: Fetch, file: Pick<HubFile, 'repo' | 'revision' | 'path'>): Promise<string> {
+  const res = await fetch(resolveUrl(file), { headers: HUB_HEADERS })
+  if (!res.ok) throw await hubError(res, file.repo, file.path)
+  return res.text()
 }
 
 /** Every file in `repo` at `revision`, or only those under `folder`, following pagination. */
@@ -83,7 +116,7 @@ export async function hubError(res: Response, repo: string, path?: string): Prom
     return `Hugging Face answered ${res.status}${path ? ` for ${path}` : ''}`
   })()
   await res.body?.cancel()
-  return new HubError(message, res.status)
+  return new HubError(message, res.status, code)
 }
 
 function encodePath(path: string): string {

@@ -1,9 +1,9 @@
-import { createHash } from 'node:crypto'
 import { existsSync } from 'node:fs'
 import { mkdtemp, readFile, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { fakeHub, gitBlobSha1, sha256, text, type FakeRepo } from './fakeHub'
 import type { ModelProcessTransport, ModelRequest } from './modelProcess'
 import { Models, type ModelSettings } from './models'
 
@@ -14,83 +14,6 @@ const SETTINGS: ModelSettings = {
 }
 
 const GB = 1_000_000_000
-
-interface HubFile {
-  content: Buffer
-  lfs?: boolean
-}
-
-type Repo = Record<string, HubFile>
-
-interface HubRequest {
-  url: string
-  range: string | null
-}
-
-const text = (s: string, lfs = false): HubFile => ({ content: Buffer.from(s), lfs })
-
-/**
- * Plays the Hugging Face Hub: tree listings (two entries per page, linked with `Link: rel="next"`) and
- * `resolve` downloads honouring `Range`. `override` can answer a `resolve` request instead, to script failures.
- */
-function fakeHub(repos: Record<string, Repo>, override?: (path: string, request: HubRequest) => Response | undefined) {
-  const requests: HubRequest[] = []
-  const fetch = async (input: string | URL | Request, init?: RequestInit): Promise<Response> => {
-    const url = new URL(String(input))
-    const headers = new Headers(init?.headers)
-    const request = { url: url.href, range: headers.get('range') }
-    requests.push(request)
-    init?.signal?.throwIfAborted()
-
-    const tree = url.pathname.match(/^\/api\/models\/([^/]+\/[^/]+)\/tree\/([^/]+)\/?(.*)$/)
-    if (tree) {
-      const [, repo, revision, folder] = tree
-      const files = repos[`${repo}@${revision}`]
-      if (!files) return Response.json({ error: 'Invalid username or password.' }, { status: 401 })
-      const entries = Object.entries(files)
-        .filter(([path]) => !folder || path.startsWith(`${decodeURIComponent(folder)}/`))
-        .flatMap(([path, file]) => [
-          ...(path.includes('/') ? [{ type: 'directory', oid: 'd', size: 0, path: path.slice(0, path.lastIndexOf('/')) }] : []),
-          {
-            type: 'file',
-            oid: gitBlobSha1(file.content),
-            size: file.content.length,
-            path,
-            ...(file.lfs ? { lfs: { oid: sha256(file.content), size: file.content.length, pointerSize: 135 } } : {}),
-          },
-        ])
-      const cursor = Number(url.searchParams.get('cursor') ?? 0)
-      const next = new URL(url)
-      next.searchParams.set('cursor', String(cursor + 2))
-      return Response.json(entries.slice(cursor, cursor + 2), {
-        headers: cursor + 2 < entries.length ? { Link: `<${next.href}>; rel="next"` } : {},
-      })
-    }
-
-    const resolve = url.pathname.match(/^\/([^/]+\/[^/]+)\/resolve\/([^/]+)\/(.+)$/)
-    if (resolve) {
-      const [, repo, revision, encodedPath] = resolve
-      const path = decodeURIComponent(encodedPath)
-      const overridden = override?.(path, request)
-      if (overridden) return overridden
-      const file = repos[`${repo}@${revision}`]?.[path]
-      if (!file) return new Response('Entry not found', { status: 404, headers: { 'x-error-code': 'EntryNotFound' } })
-      const from = Number(request.range?.match(/^bytes=(\d+)-$/)?.[1] ?? 0)
-      if (!request.range) return new Response(file.content)
-      if (from >= file.content.length) return new Response(null, { status: 416 })
-      return new Response(file.content.subarray(from), {
-        status: 206,
-        headers: { 'content-range': `bytes ${from}-${file.content.length - 1}/${file.content.length}` },
-      })
-    }
-    return new Response('not found', { status: 404 })
-  }
-  return { fetch: fetch as typeof globalThis.fetch, requests }
-}
-
-const sha256 = (data: Buffer) => createHash('sha256').update(data).digest('hex')
-const gitBlobSha1 = (data: Buffer) =>
-  createHash('sha1').update(`blob ${data.length}\0`).update(data).digest('hex')
 
 let dir: string
 
@@ -218,7 +141,7 @@ function droppedAfter(content: Buffer, bytes: number): Response {
   )
 }
 
-const qwenRepo = (): Repo => ({
+const qwenRepo = (): FakeRepo => ({
   '.gitattributes': text('*.safetensors filter=lfs'),
   'README.md': text('# Qwen'),
   'config.json': text('{"model_type":"qwen3"}'),
