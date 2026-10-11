@@ -9,7 +9,7 @@ import {
   type SpeedTier,
 } from '../../../shared/modelLibrary'
 import { MODEL_ROLES, type ModelRole, type PublicSettings } from '../../../shared/types'
-import { formatBytes } from '../format'
+import { formatBytes, percent } from '../format'
 
 const api = window.openwispr
 
@@ -320,8 +320,4 @@ function UseButton({ role, modelId }: { role: ModelRole; modelId: string }) {
       Use for {ROLE_LABELS[role]}
     </button>
   )
-}
-
-function percent(done: number, total: number): number {
-  return total > 0 ? Math.floor((done / total) * 100) : 0
 }

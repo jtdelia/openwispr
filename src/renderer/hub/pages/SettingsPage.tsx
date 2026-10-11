@@ -16,7 +16,7 @@ import {
   type SettingsPatch,
   type ShortcutAction,
 } from '../../../shared/types'
-import { formatBytes } from '../format'
+import { formatBytes, percent } from '../format'
 import { useData } from '../useData'
 import { ModelsSection } from './ModelsSection'
 
@@ -338,15 +338,17 @@ const DOWNLOADED_MODEL_TEXT: Record<ModelRole, { private: string; preparing: str
 function DownloadedModel({ role, status }: { role: ModelRole; status: ModelStatus }) {
   const { model, state } = status
   const text = DOWNLOADED_MODEL_TEXT[role]
-  const selectApple = () => update({ [role]: APPLE_SELECTION })
+  const useApple = (
+    <button className="link" onClick={() => update({ [role]: APPLE_SELECTION })}>
+      Use Apple
+    </button>
+  )
   switch (state.kind) {
     case 'installed':
       if (!isRunnable(model)) {
         return (
           <SettingRow title="Model" description={`${model.name} needs an engine OpenWispr doesn’t have yet.`}>
-            <button className="button" onClick={selectApple}>
-              Use Apple
-            </button>
+            {useApple}
           </SettingRow>
         )
       }
@@ -366,11 +368,9 @@ function DownloadedModel({ role, status }: { role: ModelRole; status: ModelStatu
       return (
         <SettingRow
           title="Model"
-          description={`Downloading ${model.name}… ${Math.floor((state.bytesDone / Math.max(1, state.totalBytes)) * 100)}%. ${text.usedBy} once it’s installed.`}
+          description={`Downloading ${model.name}… ${percent(state.bytesDone, state.totalBytes)}%. ${text.usedBy} once it’s installed.`}
         >
-          <button className="link" onClick={selectApple}>
-            Use Apple instead
-          </button>
+          {useApple}
         </SettingRow>
       )
     case 'notDownloaded':
@@ -378,9 +378,7 @@ function DownloadedModel({ role, status }: { role: ModelRole; status: ModelStatu
       return (
         <SettingRow title="Model" description={`${model.name} isn’t downloaded yet.`}>
           <div className="secret">
-            <button className="link" onClick={selectApple}>
-              Use Apple
-            </button>
+            {useApple}
             <button className="button" onClick={() => void api.downloadModel(model.id)}>
               {state.kind === 'paused' ? 'Resume' : 'Download'} ({formatBytes(model.sizeBytes)})
             </button>
