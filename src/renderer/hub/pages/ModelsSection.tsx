@@ -44,8 +44,8 @@ export function ModelsSection({ library, settings }: { library: ModelLibrary; se
     <section className="card settings-section">
       <h2>Built-in models</h2>
       <p className="muted small">
-        Recommended models run on this Mac and are downloaded from Hugging Face. Downloaded speech-to-text models can
-        be selected once installed; chat and vision models become selectable once their engine ships.
+        Recommended models run on this Mac and are downloaded from Hugging Face. Downloaded speech-to-text and chat
+        models can be selected once installed; vision models become selectable once Lens ships.
       </p>
       {MODEL_TASKS.map((task) => (
         <div key={task} className="model-group">
@@ -163,10 +163,8 @@ function DownloadActions({ status, selectedFor, onRemove }: { status: ModelStatu
       return (
         <>
           <span className="badge ok">Installed · {formatBytes(state.sizeBytes)}</span>
-          {selectedFor === null && model.task === 'speechToText' && isRunnable(model) && (
-            <button className="button" onClick={() => void api.updateSettings({ speechToText: { kind: 'builtIn', modelId: model.id } })}>
-              Use for speech-to-text
-            </button>
+          {selectedFor === null && isRole(model.task) && isRunnable(model) && (
+            <UseButton role={model.task} modelId={model.id} />
           )}
           {selectedFor === null ? (
             <button className="link danger" onClick={onRemove}>
@@ -184,6 +182,18 @@ function DownloadActions({ status, selectedFor, onRemove }: { status: ModelStatu
       throw new Error(`unhandled download state ${JSON.stringify(unreachable)}`)
     }
   }
+}
+
+function isRole(task: ModelTask): task is ModelRole {
+  return (MODEL_ROLES as ModelTask[]).includes(task)
+}
+
+function UseButton({ role, modelId }: { role: ModelRole; modelId: string }) {
+  return (
+    <button className="button" onClick={() => void api.updateSettings({ [role]: { kind: 'builtIn', modelId } })}>
+      Use for {ROLE_LABELS[role]}
+    </button>
+  )
 }
 
 function percent(done: number, total: number): number {

@@ -105,6 +105,13 @@ export interface BuiltInStatus {
     /** ISO language codes, or null when it isn't limited to a known set. */
     languages: string[] | null
   }
+  /** The selected downloaded chat model, when one is selected and installed. */
+  chat?: {
+    model: string
+    name: string
+    /** Tokens a request and its answer may use together: the model's own limit, capped to what fits in memory. */
+    contextSize: number
+  }
 }
 
 /**

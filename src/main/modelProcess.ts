@@ -12,8 +12,8 @@ export type ModelRequestBody =
   | { type: 'complete'; model: string; messages: ChatMessage[]; maxTokens: number }
   | { type: 'load'; models: ModelRef[] }
   | { type: 'unload'; models: string[] }
-  /** `speechToText` is the selected downloaded speech-to-text model, if any. */
-  | { type: 'status'; language: string; speechToText?: string }
+  /** `speechToText` and `chat` are the selected downloaded models, if any. */
+  | { type: 'status'; language: string; speechToText?: string; chat?: string }
 
 export type ModelRequest = ModelRequestBody & { id: number }
 

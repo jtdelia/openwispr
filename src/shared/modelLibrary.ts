@@ -10,7 +10,7 @@ export type ModelEngine = 'whisperKit' | 'fluidAudio' | 'mlx'
 /** Engines the model process can run, per task; installed models of other engines can't be selected yet. */
 export const RUNNABLE_ENGINES: Record<ModelTask, ModelEngine[]> = {
   speechToText: ['whisperKit', 'fluidAudio'],
-  chat: [],
+  chat: ['mlx'],
   vision: [],
 }
 

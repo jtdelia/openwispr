@@ -87,6 +87,15 @@ function models(
   return { models: new Models({ fetch: fake.fetch, settings: () => settings, transport, modelsDir }), sent: fake.sent }
 }
 
+/** Leaves a Recommended model's folder in `dir` the way a download does. */
+async function downloadedModel(dir: string, id: string, { installed = true } = {}) {
+  const entry = RECOMMENDED_MODELS.find((m) => m.id === id)
+  if (!entry) throw new Error(`no Recommended model ${id}`)
+  const manifest: ModelManifest = { ...entry, userAdded: false, installed, files: [] }
+  await mkdir(join(dir, id), { recursive: true })
+  await writeFile(join(dir, id, 'manifest.json'), JSON.stringify(manifest))
+}
+
 describe('Models routing', () => {
   it('sends transcription to the speech-to-text Endpoint with its model, key and language', async () => {
     const { models: m, sent } = models(ENDPOINTS)
@@ -260,14 +269,7 @@ describe('Models with a downloaded speech-to-text model', () => {
     await rm(dir, { recursive: true, force: true })
   })
 
-  /** Leaves a model folder the way a download does. */
-  async function downloaded(id: string, { installed = true } = {}) {
-    const entry = RECOMMENDED_MODELS.find((m) => m.id === id)
-    if (!entry) throw new Error(`no Recommended model ${id}`)
-    const manifest: ModelManifest = { ...entry, userAdded: false, installed, files: [] }
-    await mkdir(join(dir, id), { recursive: true })
-    await writeFile(join(dir, id, 'manifest.json'), JSON.stringify(manifest))
-  }
+  const downloaded = (id: string, options?: { installed?: boolean }) => downloadedModel(dir, id, options)
 
   async function selected(settings: ModelSettings, process = fakeModelProcess()) {
     await downloaded(settings.speechToText.kind === 'builtIn' ? settings.speechToText.modelId : '')
@@ -781,12 +783,88 @@ describe('Models availability', () => {
     expect(local.availability('speechToText')).toEqual({ available: true })
   })
 
-  it('reports downloaded chat models as unavailable until they ship', async () => {
-    const process = fakeModelProcess()
-    const { models: m, sent } = models({ ...ENDPOINTS, chat: { kind: 'builtIn', modelId: 'qwen3.5-4b' } }, undefined, process.transport)
-    expect(m.availability('chat')).toEqual({ available: false, reason: 'Built-in models are not available yet' })
-    await expect(m.complete([{ role: 'user', content: 'hi' }])).rejects.toThrow('Built-in models are not available yet')
+})
+
+const QWEN = { ...ENDPOINTS, chat: { kind: 'builtIn', modelId: 'qwen3-4b-instruct-2507' } } satisfies ModelSettings
+
+describe('Models with a downloaded chat model', () => {
+  let dir: string
+
+  beforeEach(async () => {
+    dir = await mkdtemp(join(tmpdir(), 'openwispr-chat-'))
+  })
+
+  afterEach(async () => {
+    await rm(dir, { recursive: true, force: true })
+  })
+
+  async function selected(settings: ModelSettings, process = fakeModelProcess()) {
+    await downloadedModel(dir, settings.chat.kind === 'builtIn' ? settings.chat.modelId : '')
+    const { models: m, sent } = models(settings, undefined, process.transport, dir)
+    await m.ready
+    return { models: m, sent, process }
+  }
+
+  it('sends chat messages to an installed MLX model in the model process', async () => {
+    const { models: m, sent, process } = await selected(QWEN, fakeModelProcess(() => ({ result: { text: ' Tidy text. ' } })))
+    const messages = [{ role: 'user' as const, content: 'tidy text' }]
+    expect(m.availability('chat')).toEqual({ available: true })
+    expect(await m.complete(messages, { maxTokens: 300 })).toBe('Tidy text.')
     expect(sent).toHaveLength(0)
+    expect(process.requests()).toEqual([
+      { id: expect.any(Number), type: 'complete', model: 'qwen3-4b-instruct-2507', messages, maxTokens: 300 },
+    ])
+  })
+
+  it('reports a selected chat model that is missing or still downloading as unavailable, without starting the model process', async () => {
+    await downloadedModel(dir, 'qwen3-4b-instruct-2507', { installed: false })
+    const process = fakeModelProcess()
+    const { models: m } = models(QWEN, undefined, process.transport, dir)
+    await m.ready
+    const reason = "Qwen3 4B Instruct isn't downloaded. Download it or choose another chat model in Settings"
+    expect(m.availability('chat')).toEqual({ available: false, reason })
+    await expect(m.complete([{ role: 'user', content: 'hi' }])).rejects.toThrow(reason)
+    expect(await m.cleanup(DICTATION)).toEqual({ text: DICTATION.transcript, notice: `Cleanup skipped: ${reason}` })
     expect(process.requests()).toHaveLength(0)
+  })
+
+  it('loads the selected chat model when a dictation starts, and reports it as preparing while a slow first load runs', async () => {
+    const process = fakeModelProcess((request) => (request.type === 'load' ? undefined : { result: {} }))
+    const { models: m } = await selected({ ...QWEN, language: 'en' }, process)
+    const progress: unknown[] = []
+    m.on('progress', (p) => progress.push(p))
+    vi.useFakeTimers()
+    try {
+      m.warmUp()
+      m.warmUp()
+      expect(process.requests()).toEqual([
+        { id: expect.any(Number), type: 'load', models: [{ role: 'chat', id: 'qwen3-4b-instruct-2507', language: 'en' }] },
+      ])
+      await vi.advanceTimersByTimeAsync(1000)
+      expect(progress).toEqual([{ kind: 'preparingModel', modelId: 'qwen3-4b-instruct-2507', name: 'Qwen3 4B Instruct', preparing: true }])
+      process.connections[0].send({ type: 'response', id: process.requests()[0].id, result: {} })
+      await vi.advanceTimersByTimeAsync(0)
+      expect(progress.at(-1)).toMatchObject({ modelId: 'qwen3-4b-instruct-2507', preparing: false })
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it("reads the selected chat model's context size from the model process", async () => {
+    const status = {
+      appleSpeech: { available: true, locale: 'de-DE', locales: ['de-DE'] },
+      appleChat: { available: true, contextSize: 4096 },
+      chat: { model: 'qwen3-4b-instruct-2507', name: 'Qwen3 4B Instruct', contextSize: 32_768 },
+    }
+    const process = fakeModelProcess(() => ({ result: status }))
+    const { models: m } = await selected(QWEN, process)
+    expect(await m.chatContextSize()).toBe(32_768)
+    expect(process.requests()).toEqual([{ id: expect.any(Number), type: 'status', language: 'de', chat: 'qwen3-4b-instruct-2507' }])
+  })
+
+  it('reports an installed model that is not for chat as unavailable', async () => {
+    await downloadedModel(dir, 'whisper-small')
+    const { models: m } = await selected({ ...QWEN, chat: { kind: 'builtIn', modelId: 'whisper-small' } })
+    expect(m.availability('chat')).toEqual({ available: false, reason: "Whisper small isn't a chat model" })
   })
 })

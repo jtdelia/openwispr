@@ -336,7 +336,7 @@ describe('Using a downloaded model', () => {
     )
   })
 
-  it('does not load a downloaded model the model process has no engine for', async () => {
+  it('does not load a downloaded chat model until it is used, since it would hold its memory', async () => {
     const process = recordingModelProcess()
     await models(fakeHub({ [QWEN]: qwenRepo() }), 32 * GB, { transport: process.transport }).download('qwen3-4b-instruct-2507')
     await new Promise((resolve) => setTimeout(resolve, 10))
