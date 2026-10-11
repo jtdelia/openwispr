@@ -72,6 +72,7 @@ struct Server: Sendable {
     /// Where the app keeps downloaded models, one folder per model id.
     let modelsDir: URL?
     let parakeet: Parakeet
+    let whisper: Whisper
 
     func handle(_ request: Request) async {
         do {
@@ -148,6 +149,7 @@ struct Server: Sendable {
         guard model.task == "speechToText" else { throw ModelError.unavailable("\(model.name) isn't a speech-to-text model") }
         switch model.engine {
         case "fluidAudio": return ParakeetEngine(model: model, parakeet: parakeet)
+        case "whisperKit": return whisper.engine(for: model)
         default: throw ModelError.unavailable("\(model.name) can't be used for speech-to-text yet")
         }
     }

@@ -1,9 +1,10 @@
 #!/usr/bin/env node
 // Manual smoke test of the model process, printing latency.
-// Usage: npm run models:smoke -- [clip.wav] [--language en] [--model apple] [--models-dir dir]
+// Usage: npm run models:smoke -- [clip.wav] [--language en] [--prompt "OpenWispr"] [--model apple] [--models-dir dir]
 //        npm run models:smoke -- --cleanup [fixtures.json]
 // The first transcribes a clip. --model is `apple` or a downloaded model's id, looked up in --models-dir
-// (defaults to the app's). The clip must be a 16 kHz mono 16-bit WAV, e.g.
+// (defaults to the app's). The first load of a downloaded Core ML model (like `whisper-small`) compiles it
+// for this Mac and can take minutes. The clip must be a 16 kHz mono 16-bit WAV, e.g.
 // `say -o clip.wav --file-format=WAVE --data-format=LEI16@16000 "…"`.
 // `--cleanup` runs the Cleanup fixtures through Apple's chat model with the app's prompt and prints Markdown.
 // With OPENAI_API_KEY set it also runs them through the cloud default (OPENWISPR_CLOUD_MODEL, default
@@ -26,6 +27,7 @@ function flag(name) {
   return index >= 0 && args.splice(index, 1).length > 0
 }
 const language = option('--language', 'en')
+const prompt = option('--prompt', '')
 const model = option('--model', 'apple')
 const modelsDir = option('--models-dir', join(homedir(), 'Library/Application Support/OpenWispr/models'))
 const cleanup = flag('--cleanup')
@@ -81,7 +83,7 @@ async function smokeSpeech() {
   const clip = args[0] ?? 'scripts/fixtures/dictation-en.wav'
   const audio = readFileSync(clip)
   const audioSeconds = (audio.byteLength - 44) / 32_000
-  const transcribe = { type: 'transcribe', model, audio: audio.toString('base64'), language, prompt: '', segments: true }
+  const transcribe = { type: 'transcribe', model, audio: audio.toString('base64'), language, prompt, segments: true }
   console.log(`Clip: ${clip} (${audioSeconds.toFixed(1)} s), model "${model}", language "${language}"`)
   const status = await timed('Status (process start)', { type: 'status', language, ...(model !== 'apple' && { speechToText: model }) })
   if (model === 'apple') {

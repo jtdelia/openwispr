@@ -13,7 +13,7 @@ export function FlowBar() {
   const [levels, setLevels] = useState<number[]>(() => Array(BAR_COUNT).fill(0))
   const [hovered, setHovered] = useState(false)
   const [pttLabel, setPttLabel] = useState('fn')
-  const [download, setDownload] = useState<ModelProgress | null>(null)
+  const [modelProgress, setModelProgress] = useState<ModelProgress | null>(null)
   const latestLevel = useRef(0)
   const recorder = useRef<Recorder>(null)
   const meetingRecorder = useRef<MeetingRecorder>(null)
@@ -28,7 +28,7 @@ export function FlowBar() {
       api.onFlowBarState(setState),
       api.onSound(playSound),
       api.onDataChanged((topic) => topic === 'settings' && loadShortcut()),
-      api.onModelProgress((progress) => setDownload(progress.fraction < 1 ? progress : null)),
+      api.onModelProgress((progress) => setModelProgress(isOngoing(progress) ? progress : null)),
       api.onRecorderCommand((command) => {
         const rec = recorder.current!
         switch (command.type) {
@@ -101,12 +101,8 @@ export function FlowBar() {
 
   return (
     <div className="stage">
-      {download && (
-        <div className="tooltip">
-          Downloading Apple’s speech-to-text for {download.locale}… {Math.round(download.fraction * 100)}%
-        </div>
-      )}
-      {!download && state.kind === 'resting' && hovered && (
+      {modelProgress && <div className="tooltip">{progressLabel(modelProgress)}</div>}
+      {!modelProgress && state.kind === 'resting' && hovered && (
         <div className="tooltip">
           Click or hold <kbd>{pttLabel}</kbd> to start dictating
         </div>
@@ -144,6 +140,32 @@ export function FlowBar() {
       </div>
     </div>
   )
+}
+
+function isOngoing(progress: ModelProgress): boolean {
+  switch (progress.kind) {
+    case 'appleSpeechAssets':
+      return progress.fraction < 1
+    case 'preparingModel':
+      return progress.preparing
+    default: {
+      const unreachable: never = progress
+      throw new Error(`unhandled model progress ${JSON.stringify(unreachable)}`)
+    }
+  }
+}
+
+function progressLabel(progress: ModelProgress): string {
+  switch (progress.kind) {
+    case 'appleSpeechAssets':
+      return `Downloading Apple’s speech-to-text for ${progress.locale}… ${Math.round(progress.fraction * 100)}%`
+    case 'preparingModel':
+      return `Preparing ${progress.name} for this Mac… The first use can take a couple of minutes.`
+    default: {
+      const unreachable: never = progress
+      throw new Error(`unhandled model progress ${JSON.stringify(unreachable)}`)
+    }
+  }
 }
 
 function Bars({ levels, idle }: { levels: number[]; idle: boolean }) {
