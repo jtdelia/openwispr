@@ -1,10 +1,12 @@
+import { join } from 'node:path'
 import { app, clipboard, ipcMain, Menu, systemPreferences, Tray } from 'electron'
 import { Channel, type FlowBarAction, type MeetingChunk, type MeetingRecorderEvent, type RecorderEvent } from '../shared/api'
 import { microphoneHelp } from '../shared/permissions'
 import {
-  isLocalEndpoint,
+  MODEL_ROLES,
   type DictionaryEntry,
   type MeetingPatch,
+  type ModelRole,
   type NotetakerState,
   type PermissionStatus,
   type SettingsPatch,
@@ -13,6 +15,9 @@ import {
 import { DictationController } from './dictation'
 import { Helper } from './helper'
 import { MeetingStore } from './meetingStore'
+import { spawnTransport } from './modelProcess'
+import { Models } from './models'
+import { MODEL_PROCESS, nativeExecutablePath } from './nativeExecutables'
 import { NotetakerController } from './notetaker'
 import { ShortcutEngine } from './shortcutEngine'
 import { Store } from './store'
@@ -31,11 +36,24 @@ async function main(): Promise<void> {
 
   const store = new Store()
   const meetings = new MeetingStore()
+  const modelProcessPath = nativeExecutablePath(MODEL_PROCESS, {
+    isPackaged: app.isPackaged,
+    resourcesPath: process.resourcesPath,
+    appPath: app.getAppPath(),
+  })
+  const modelsDir = join(app.getPath('userData'), 'models')
+  const models = new Models({
+    fetch: globalThis.fetch,
+    settings: () => store.settings,
+    transport: spawnTransport(modelProcessPath, { requestSpeechAuthorization: app.isPackaged, modelsDir }),
+    modelsDir,
+  })
   const helper = new Helper()
   const windows = new Windows()
+  models.on('progress', (progress) => windows.broadcast(Channel.modelProgress, progress))
   const engine = new ShortcutEngine(store.settings.shortcuts)
-  const dictation = new DictationController(helper, store, windows, engine)
-  const notetaker = new NotetakerController(helper, store, meetings, windows, (state) => updateTray(state))
+  const dictation = new DictationController(helper, store, models, windows, engine)
+  const notetaker = new NotetakerController(helper, store, models, meetings, windows, (state) => updateTray(state))
   let capturingShortcut = false
   let captureHeld = new Set<number>()
   let accessibility = { trusted: false, keyTapRunning: false }
@@ -92,6 +110,26 @@ async function main(): Promise<void> {
     app.setLoginItemSettings({ openAtLogin: settings.launchAtLogin })
     windows.broadcast(Channel.dataChanged, 'settings')
     return store.publicSettings
+  })
+  ipcMain.handle(Channel.testEndpoint, (_e, role: ModelRole) => {
+    if (!MODEL_ROLES.includes(role)) throw new Error(`Unknown model role ${String(role)}`)
+    return models.testEndpoint(role)
+  })
+  ipcMain.handle(Channel.getBuiltInStatus, () => models.status())
+  models.onLibraryChanged(() => windows.broadcast(Channel.dataChanged, 'models'))
+  ipcMain.handle(Channel.getModelLibrary, () => models.library())
+  ipcMain.handle(Channel.downloadModel, (_e, id: string) => {
+    // A failure is shown from the library state, which keeps the error.
+    void models.download(id).catch(() => undefined)
+  })
+  ipcMain.handle(Channel.cancelDownload, (_e, id: string) => models.cancelDownload(id))
+  ipcMain.handle(Channel.removeModel, (_e, id: string) => models.removeModel(id))
+  ipcMain.handle(Channel.checkHubRepo, (_e, input: string) => models.checkRepo(String(input)))
+  ipcMain.handle(Channel.addHubModel, async (_e, input: string) => {
+    const check = await models.checkRepo(String(input))
+    // As for Recommended models, a failure is shown from the library state.
+    if (check.kind === 'compatible') void models.addModel(check.model).catch(() => undefined)
+    return check
   })
   ipcMain.handle(Channel.getHistory, () => store.getHistory())
   ipcMain.handle(Channel.deleteHistoryEntry, (_e, id: string) => {
@@ -227,14 +265,14 @@ async function main(): Promise<void> {
     store.flush()
     meetings.flush()
     helper.stop()
+    models.stop()
     // A non-closable window would otherwise veto app.quit().
     windows.flowBar.destroy()
   })
 
   const status = await permissions()
-  const { transcription } = store.settings
-  const hasProvider = Boolean(transcription.apiKey) || isLocalEndpoint(transcription.baseUrl)
-  const needsSetup = !hasProvider || !status.accessibility || status.microphone !== 'granted'
+  await models.ready
+  const needsSetup = !models.availability('speechToText').available || !status.accessibility || status.microphone !== 'granted'
   if (needsSetup || !app.getLoginItemSettings().wasOpenedAtLogin) windows.showHub()
 }
 

@@ -6,14 +6,20 @@
   "license": "MIT",
   "main": "out/main/index.js",
   "scripts": {
-    "setup": "node node_modules/electron/install.js && npm run helper:build",
-    "dev": "npm run helper:build && electron-vite dev",
-    "build": "npm run helper:build && electron-vite build",
+    "setup": "node node_modules/electron/install.js && npm run native:build",
+    "dev": "npm run native:build && electron-vite dev",
+    "build": "npm run native:build && electron-vite build",
     "start": "electron-vite preview",
+    "package": "node scripts/package.mjs",
     "start:standalone": "npm run build && open -n node_modules/electron/dist/Electron.app --args \"$PWD\"",
     "helper:build": "swift build -c release --package-path native/helper",
+    "models:build": "swift build -c release --package-path native/models && node scripts/copy-metallib.mjs",
+    "native:build": "npm run helper:build && npm run models:build",
+    "models:smoke": "node scripts/smoke-models.mjs",
+    "models:smoke-summary": "vite-node scripts/smoke-summary.ts --",
+    "models:check-repo": "vite-node scripts/check-hub-repo.ts --",
     "typecheck": "tsc --noEmit -p tsconfig.node.json && tsc --noEmit -p tsconfig.web.json",
-    "test": "vitest run"
+    "test": "vitest run --dir src"
   },
   "dependencies": {
     "react": "^19.3.0",
@@ -25,6 +31,7 @@
     "@types/react-dom": "^19.3.0",
     "@vitejs/plugin-react": "^5.2.0",
     "electron": "^44.7.0",
+    "electron-builder": "^26.15.3",
     "electron-vite": "^5.0.0",
     "typescript": "^7.0.2",
     "vite": "^7.3.7",

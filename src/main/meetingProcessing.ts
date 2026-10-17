@@ -39,9 +39,13 @@ export function isLikelyHallucination(text: string): boolean {
 
 /** One line per speaker turn, labelled with the names the user gave or the detected ones. */
 export function formatTranscript(entries: TranscriptEntry[], names: Record<string, string>, userName: string): string {
-  const text = transcriptTurns(entries)
+  return transcriptTurns(entries)
     .map((t) => `[${formatClock(t.startMs)}] ${speakerLabel(t.speaker, names, userName)}: ${t.text.trim()}`)
     .join('\n')
+}
+
+/** For chat models of unknown context, which get the whole meeting in one request. */
+export function shortenTranscript(text: string): string {
   if (text.length <= MAX_TRANSCRIPT_CHARS) return text
   const half = MAX_TRANSCRIPT_CHARS / 2
   return `${text.slice(0, half)}\n[… middle of the meeting omitted for length …]\n${text.slice(-half)}`
@@ -105,11 +109,25 @@ export interface SummaryInput {
   recordedAt: number
 }
 
-export function summaryMessages(input: SummaryInput): ChatMessage[] {
-  const spellings = input.dictionary.map((d) => d.word.trim()).filter(Boolean)
+function spellingRule(dictionary: DictionaryEntry[]): string[] {
+  const spellings = dictionary.map((d) => d.word.trim()).filter(Boolean)
+  return spellings.length > 0 ? [`- Always use these exact spellings: ${spellings.join(', ')}.`] : []
+}
+
+function formatParts(parts: string[]): string {
+  return `<parts>\n${parts.map((p, i) => `Part ${i + 1}:\n${p.trim()}`).join('\n\n')}\n</parts>`
+}
+
+/**
+ * The meeting notes, from the transcript or, for a meeting too long for the chat model, from `parts`:
+ * summaries of its consecutive sections, in order.
+ */
+export function summaryMessages(input: SummaryInput, parts?: string[]): ChatMessage[] {
   const me = defaultSpeakerLabel(YOU, input.userName)
   const rules = [
-    "You are a meeting notetaker. You receive a meeting transcript and the user's own notes, and write the meeting notes in Markdown.",
+    parts
+      ? "You are a meeting notetaker. You receive notes on consecutive parts of a long meeting's transcript, in order, and the user's own notes, and write the meeting notes in Markdown."
+      : "You are a meeting notetaker. You receive a meeting transcript and the user's own notes, and write the meeting notes in Markdown.",
     '',
     'The transcript comes from two audio channels:',
     `- "${me}" is the user, recorded from their microphone.`,
@@ -128,8 +146,8 @@ export function summaryMessages(input: SummaryInput): ChatMessage[] {
     '- Be specific: keep names, numbers, dates and commitments. Leave out small talk and filler.',
     '- Never invent facts that are not supported by the transcript or notes.',
     '- Write in the language the meeting was held in.',
+    ...spellingRule(input.dictionary),
   ]
-  if (spellings.length > 0) rules.push(`- Always use these exact spellings: ${spellings.join(', ')}.`)
 
   const user = [
     '<meeting>',
@@ -137,12 +155,53 @@ export function summaryMessages(input: SummaryInput): ChatMessage[] {
     `Date: ${new Date(input.recordedAt).toLocaleString('en-US', { dateStyle: 'full', timeStyle: 'short' })}`,
     '</meeting>',
     `<notes>\n${input.notes.trim() || '(none)'}\n</notes>`,
-    `<transcript>\n${input.transcript}\n</transcript>`,
+    parts ? formatParts(parts) : `<transcript>\n${input.transcript}\n</transcript>`,
   ].join('\n')
 
   return [
     { role: 'system', content: rules.join('\n') },
     { role: 'user', content: user },
+  ]
+}
+
+/** Notes on one section of a meeting too long for the chat model, to be combined by `summaryMessages`. */
+export function sectionMessages(
+  input: Pick<SummaryInput, 'userName' | 'dictionary'>,
+  section: string,
+): ChatMessage[] {
+  const me = defaultSpeakerLabel(YOU, input.userName)
+  const rules = [
+    'You take notes on one part of a long meeting, to be combined into the meeting notes later.',
+    `"${me}" is the user. Other names are call participants, "Speaker 1", "Speaker 2", … are voices whose names are unknown, and "Others" is call audio that could not be attributed.`,
+    'The transcript is automatic speech recognition: fix misheard words when the context makes the intent clear.',
+    '',
+    'Rules:',
+    '- Write short Markdown bullets: the topics discussed, what was decided, and every task with its owner.',
+    '- Keep names, numbers, dates and commitments. Leave out small talk and filler.',
+    '- Output only the bullets. Never invent facts.',
+    '- Write in the language the meeting was held in.',
+    ...spellingRule(input.dictionary),
+  ]
+  return [
+    { role: 'system', content: rules.join('\n') },
+    { role: 'user', content: `<transcript>\n${section}\n</transcript>` },
+  ]
+}
+
+/** Merges notes on consecutive sections when there are too many to combine at once. */
+export function mergeMessages(input: Pick<SummaryInput, 'dictionary'>, parts: string[]): ChatMessage[] {
+  const rules = [
+    'You merge notes on consecutive parts of a long meeting into one shorter set of notes, to be combined into the meeting notes later.',
+    '',
+    'Rules:',
+    '- Keep every decision and every task with its owner, and keep names, numbers and dates. Merge points that repeat.',
+    '- Output only Markdown bullets. Never invent facts.',
+    '- Write in the language of the notes.',
+    ...spellingRule(input.dictionary),
+  ]
+  return [
+    { role: 'system', content: rules.join('\n') },
+    { role: 'user', content: formatParts(parts) },
   ]
 }
 

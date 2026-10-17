@@ -1,19 +1,17 @@
 import { clipboard } from 'electron'
 import { Channel, type RecorderEvent, type Sound } from '../shared/api'
 import { Key } from '../shared/keycodes'
-import { isLocalEndpoint, type DictationMode, type HistoryEntry, type HistoryStatus } from '../shared/types'
+import type { DictationMode, HistoryEntry, HistoryStatus } from '../shared/types'
 import type { AppInfo, Helper, TextBoxInfo } from './helper'
-import { complete, transcribe } from './providers'
+import type { Models } from './models'
 import type { Gesture, ShortcutEngine } from './shortcutEngine'
 import type { Store } from './store'
 import {
   appCategory,
   applyReplacements,
   applySnippets,
-  cleanupMessages,
   countWords,
   joinWithContext,
-  sanitizeCleanup,
   styleContext,
   transcriptionPrompt,
   wholeSnippet,
@@ -48,6 +46,7 @@ export class DictationController {
   constructor(
     private readonly helper: Helper,
     private readonly store: Store,
+    private readonly models: Models,
     private readonly windows: Windows,
     private readonly engine: ShortcutEngine,
   ) {}
@@ -96,12 +95,14 @@ export class DictationController {
   start(mode: DictationMode): void {
     if (this.phase.kind !== 'idle') return
     const settings = this.store.settings
-    if (!settings.transcription.apiKey && !isLocalEndpoint(settings.transcription.baseUrl)) {
+    const speechToText = this.models.availability('speechToText')
+    if (!speechToText.available) {
       this.engine.reset()
-      this.notice('Add a transcription API key in Settings', 'error')
+      this.notice(speechToText.reason, 'error')
       this.windows.showHub().webContents.send(Channel.dataChanged, 'settings')
       return
     }
+    this.models.warmUp()
     const session = ++this.session
     this.phase = { kind: 'recording', session, mode, startedAt: Date.now(), context: this.captureContext() }
     this.windows.setFlowBarState({ kind: 'initializing', mode })
@@ -186,13 +187,11 @@ export class DictationController {
 
     let asrText = ''
     try {
-      asrText = await transcribe(
-        settings.transcription,
-        wav,
-        transcriptionPrompt(this.store.dictionary, settings.userName),
-      )
+      asrText = await this.models.transcribe(wav, {
+        prompt: transcriptionPrompt(this.store.dictionary, settings.userName),
+      })
       if (!isCurrent()) return
-      const text = asrText ? await this.format(asrText, focus) : ''
+      const { text, notice } = asrText ? await this.format(asrText, focus) : { text: '', notice: null }
       if (!isCurrent()) return
 
       if (!text.trim()) {
@@ -207,7 +206,7 @@ export class DictationController {
       const copiedMessage = focus.textBox?.accessibilityIsFunctioning
         ? 'No text field focused. Copied to clipboard'
         : 'Copied. Grant Accessibility to auto-paste'
-      this.finish(status === 'copied' ? copiedMessage : null, 'info')
+      this.finish(status === 'copied' ? copiedMessage : notice, 'info')
     } catch (error) {
       if (!isCurrent()) return
       const message = error instanceof Error ? error.message : String(error)
@@ -218,30 +217,30 @@ export class DictationController {
     }
   }
 
-  private async format(asrText: string, focus: FocusContext): Promise<string> {
+  /** The text to insert, and why Cleanup didn't run when the user should know. */
+  private async format(asrText: string, focus: FocusContext): Promise<{ text: string; notice: string | null }> {
     const { dictionary, snippets } = this.store
     const settings = this.store.settings
     const snippet = wholeSnippet(asrText, snippets)
-    if (snippet !== null) return snippet
+    if (snippet !== null) return { text: snippet, notice: null }
 
     let text = applyReplacements(asrText, dictionary)
-    if (settings.cleanup.enabled && settings.cleanup.apiKey) {
+    let notice: string | null = null
+    if (settings.cleanup.enabled && this.models.availability('chat').available) {
       const category = appCategory(focus.app.bundleId, focus.app.windowTitle)
-      const output = await complete(
-        settings.cleanup,
-        cleanupMessages({
-          transcript: text,
-          style: settings.styles[styleContext(category, focus.app.bundleId, focus.app.windowTitle)],
-          category,
-          appName: focus.app.appName,
-          beforeText: focus.textBox?.beforeText ?? '',
-          dictionary,
-          userName: settings.userName,
-        }),
-      )
-      text = applyReplacements(sanitizeCleanup(output, text), dictionary)
+      const cleaned = await this.models.cleanup({
+        transcript: text,
+        style: settings.styles[styleContext(category, focus.app.bundleId, focus.app.windowTitle)],
+        category,
+        appName: focus.app.appName,
+        beforeText: focus.textBox?.beforeText ?? '',
+        dictionary,
+        userName: settings.userName,
+      })
+      text = applyReplacements(cleaned.text, dictionary)
+      notice = cleaned.notice
     }
-    return applySnippets(text, snippets)
+    return { text: applySnippets(text, snippets), notice }
   }
 
   private async insert(text: string, textBox: TextBoxInfo | null): Promise<HistoryStatus> {

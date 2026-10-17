@@ -1,10 +1,14 @@
 import type {
+  BuiltInStatus,
   DictionaryEntry,
+  EndpointTestResult,
   FlowBarState,
   HistoryEntry,
   Meeting,
   MeetingDetail,
   MeetingPatch,
+  ModelProgress,
+  ModelRole,
   NotetakerState,
   PermissionStatus,
   PublicSettings,
@@ -13,8 +17,17 @@ import type {
   Stats,
   TranscriptSource,
 } from './types'
+import type { ModelLibrary, RepoCheck } from './modelLibrary'
 
-export type DataTopic = 'settings' | 'history' | 'dictionary' | 'snippets' | 'permissions' | 'meetings' | 'notetaker'
+export type DataTopic =
+  | 'settings'
+  | 'history'
+  | 'dictionary'
+  | 'snippets'
+  | 'permissions'
+  | 'meetings'
+  | 'notetaker'
+  | 'models'
 
 export type RecorderCommand =
   | { type: 'start'; deviceId: string }
@@ -53,6 +66,19 @@ export type FlowBarAction = 'startHandsFree' | 'stop' | 'cancel' | 'openHub'
 export interface OpenWisprApi {
   getSettings(): Promise<PublicSettings>
   updateSettings(patch: SettingsPatch): Promise<PublicSettings>
+  testEndpoint(role: ModelRole): Promise<EndpointTestResult>
+  getBuiltInStatus(): Promise<BuiltInStatus>
+  onModelProgress(listener: (progress: ModelProgress) => void): () => void
+  getModelLibrary(): Promise<ModelLibrary>
+  /** Starts or resumes a download in the background; progress arrives as `models` data changes. */
+  downloadModel(id: string): Promise<void>
+  cancelDownload(id: string): Promise<void>
+  /** Resolves to the bytes freed. */
+  removeModel(id: string): Promise<number>
+  /** Checks a pasted Hugging Face repo id or URL without downloading it. */
+  checkHubRepo(input: string): Promise<RepoCheck>
+  /** Checks the repo again and, when compatible, starts downloading it in the background as a user-added model. */
+  addHubModel(input: string): Promise<RepoCheck>
   getHistory(): Promise<HistoryEntry[]>
   deleteHistoryEntry(id: string): Promise<void>
   clearHistory(): Promise<void>
@@ -97,6 +123,15 @@ export interface OpenWisprApi {
 export const Channel = {
   getSettings: 'settings:get',
   updateSettings: 'settings:update',
+  testEndpoint: 'models:test-endpoint',
+  getBuiltInStatus: 'models:built-in-status',
+  modelProgress: 'models:progress',
+  getModelLibrary: 'models:library',
+  downloadModel: 'models:download',
+  cancelDownload: 'models:cancel-download',
+  removeModel: 'models:remove',
+  checkHubRepo: 'models:check-hub-repo',
+  addHubModel: 'models:add-hub-model',
   getHistory: 'history:get',
   deleteHistoryEntry: 'history:delete',
   clearHistory: 'history:clear',

@@ -1,20 +1,12 @@
 import { Channel, type MeetingChunk, type MeetingRecorderEvent } from '../shared/api'
 import { appSpeaker, speakerKey, speakerLabel, voiceId, voiceSpeaker } from '../shared/speakers'
 import { MIN_SUMMARY_WORDS } from '../shared/summaryState'
-import { isLocalEndpoint, type NotetakerState, type ProviderConfig, type TranscriptSource } from '../shared/types'
-import {
-  chunkPrompt,
-  formatTranscript,
-  isLikelyHallucination,
-  relabelSummary,
-  sanitizeSummary,
-  sanitizeTitle,
-  summaryMessages,
-  titleMessages,
-} from './meetingProcessing'
+import type { NotetakerState, TranscriptSource } from '../shared/types'
+import { chunkPrompt, formatTranscript, isLikelyHallucination, relabelSummary } from './meetingProcessing'
 import type { Helper, SpeakersReport } from './helper'
 import type { MeetingStore } from './meetingStore'
-import { complete, transcribeSegments, type TranscriptSegment } from './providers'
+import { summarizeMeeting, titleMeeting } from './meetingSummary'
+import type { Models, TranscriptSegment } from './models'
 import { SpeakerIdentityMap } from './speakerIdentity'
 import { SelfName, SpeakerTimeline } from './speakerTimeline'
 import type { Store } from './store'
@@ -26,7 +18,6 @@ const STOP_FLUSH_TIMEOUT_MS = 5000
 const RETRY_DELAY_MS = 1500
 const SUMMARY_TIMEOUT_MS = 180_000
 const TITLE_ATTEMPTS = 3
-const TITLE_TRANSCRIPT_CHARS = 12_000
 /**
  * How Google Meet marks tiles: a class on the audio indicator present only while that participant
  * talks, and controls that only the user's own tile has. Meet's class names are minified and change.
@@ -65,6 +56,7 @@ export class NotetakerController {
   constructor(
     private readonly helper: Helper,
     private readonly store: Store,
+    private readonly models: Models,
     private readonly meetings: MeetingStore,
     private readonly windows: Windows,
     private readonly onStateChange: (state: NotetakerState) => void,
@@ -79,10 +71,9 @@ export class NotetakerController {
     if (this.state.kind !== 'idle') throw new Error('Another meeting is still being recorded')
     const meeting = this.meetings.get(meetingId)
     if (!meeting) throw new Error('Meeting not found')
-    const { transcription, microphoneId } = this.store.settings
-    if (!transcription.apiKey && !isLocalEndpoint(transcription.baseUrl)) {
-      throw new Error('Add a transcription API key in Settings')
-    }
+    const speechToText = this.models.availability('speechToText')
+    if (!speechToText.available) throw new Error(speechToText.reason)
+    const { microphoneId } = this.store.settings
 
     const session = ++this.session
     this.segment = {
@@ -227,13 +218,13 @@ export class NotetakerController {
   }
 
   private async transcribeChunk(segment: Segment, chunk: MeetingChunk): Promise<void> {
-    const { transcription, userName } = this.store.settings
+    const { userName } = this.store.settings
     const { dictionary } = this.store
     const memory = this.memory(segment.meetingId)
     const prompt = chunkPrompt(transcriptionPrompt(dictionary, userName), segment.previousText[chunk.source])
     const wav = Buffer.from(chunk.wav)
     const known = chunk.source === 'system' ? memory.voices.knownSpeakers() : undefined
-    const run = () => transcribeSegments(transcription, wav, chunk.endMs - chunk.startMs, prompt, known)
+    const run = () => this.models.transcribeSegments(wav, { durationMs: chunk.endMs - chunk.startMs, prompt, known })
     const parts = await run().catch(async () => {
       await new Promise((resolve) => setTimeout(resolve, RETRY_DELAY_MS))
       return run()
@@ -323,17 +314,13 @@ export class NotetakerController {
   }
 
   private async generateTitle(meetingId: string): Promise<void> {
-    const llm = this.llm()
     const detail = this.meetings.detail(meetingId)
-    if (!llm || !detail) return
-    const transcript = formatTranscript(detail.transcript, detail.speakerNames, this.store.settings.userName).slice(
-      0,
-      TITLE_TRANSCRIPT_CHARS,
-    )
+    if (!this.models.availability('chat').available || !detail) return
+    const transcript = formatTranscript(detail.transcript, detail.speakerNames, this.store.settings.userName)
     if (!transcript && !detail.notes.trim()) return
     for (let attempt = 1; attempt <= TITLE_ATTEMPTS; attempt++) {
       try {
-        const title = sanitizeTitle(await complete(llm, titleMessages({ transcript, notes: detail.notes }), { label: 'Title' }))
+        const title = await titleMeeting(this.models, { transcript, notes: detail.notes })
         // The user may have typed a title while the request was in flight.
         if (title && !this.meetings.get(meetingId)?.title.trim()) {
           this.meetings.update(meetingId, { title })
@@ -349,9 +336,8 @@ export class NotetakerController {
   async generateSummary(meetingId: string): Promise<void> {
     const meeting = this.meetings.get(meetingId)
     if (!meeting || meeting.summaryGenerating) return
-    const llm = this.llm()
-    if (!llm) {
-      this.meetings.update(meetingId, { summaryError: 'Set up an AI cleanup model in Settings to generate summaries' })
+    if (!this.models.availability('chat').available) {
+      this.meetings.update(meetingId, { summaryError: 'Set up a chat model in Settings to generate summaries' })
       this.broadcastMeetings()
       return
     }
@@ -363,19 +349,18 @@ export class NotetakerController {
       const detail = this.meetings.detail(meetingId)
       if (!detail) return
       const { userName } = this.store.settings
-      const output = await complete(
-        llm,
-        summaryMessages({
+      const summary = await summarizeMeeting(
+        this.models,
+        {
           title: detail.title,
           transcript: formatTranscript(detail.transcript, detail.speakerNames, userName),
           notes: detail.notes,
           userName,
           dictionary: this.store.dictionary,
           recordedAt: detail.createdAt,
-        }),
-        { label: 'Summary', timeoutMs: SUMMARY_TIMEOUT_MS },
+        },
+        { timeoutMs: SUMMARY_TIMEOUT_MS },
       )
-      const summary = sanitizeSummary(output)
       if (!summary) throw new Error('The model returned an empty summary')
       this.meetings.update(meetingId, { summary, summaryRecordedMs: detail.recordedMs, summaryError: null })
     } catch (error) {
@@ -385,13 +370,6 @@ export class NotetakerController {
       this.meetings.setGenerating(meetingId, false)
       this.broadcastMeetings()
     }
-  }
-
-  /** Summaries and titles use the dictation cleanup model, whether or not cleanup is enabled for dictation. */
-  private llm(): ProviderConfig | null {
-    const { cleanup } = this.store.settings
-    if (!cleanup.model.trim()) return null
-    return cleanup.apiKey || isLocalEndpoint(cleanup.baseUrl) ? cleanup : null
   }
 
   private setState(state: NotetakerState): void {

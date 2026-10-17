@@ -31,16 +31,41 @@ export function isLocalEndpoint(baseUrl: string): boolean {
   return /^https?:\/\/(localhost|127\.0\.0\.1|\[::1\])(:|\/|$)/.test(baseUrl)
 }
 
-export interface ProviderConfig {
+export type ModelRole = 'speechToText' | 'chat'
+
+export const MODEL_ROLES: ModelRole[] = ['speechToText', 'chat']
+
+export interface EndpointConfig {
   baseUrl: string
   model: string
   /** Encrypted at rest; plaintext only ever lives in the main process. */
   apiKey: string
 }
 
+/** The Built-in model id of Apple's on-device model, for either role. */
+export const APPLE_MODEL_ID = 'apple'
+
+/** `modelId` is `APPLE_MODEL_ID` for Apple's on-device model, otherwise a downloaded model's id. */
+export type ModelSelection = { kind: 'builtIn'; modelId: string } | ({ kind: 'endpoint' } & EndpointConfig)
+
+export type PublicModelSelection =
+  | { kind: 'builtIn'; modelId: string }
+  | ({ kind: 'endpoint'; hasApiKey: boolean } & Omit<EndpointConfig, 'apiKey'>)
+
+export type ModelSelectionPatch = { kind: 'builtIn'; modelId: string } | ({ kind: 'endpoint' } & Partial<EndpointConfig>)
+
+export const APPLE_SELECTION = { kind: 'builtIn', modelId: APPLE_MODEL_ID } as const satisfies ModelSelection
+
+export function isAppleSelection(selection: ModelSelection | PublicModelSelection): boolean {
+  return selection.kind === 'builtIn' && selection.modelId === APPLE_MODEL_ID
+}
+
 export interface Settings {
-  transcription: ProviderConfig & { language: string }
-  cleanup: ProviderConfig & { enabled: boolean }
+  speechToText: ModelSelection
+  chat: ModelSelection
+  /** ISO code like `en`; empty to auto-detect. */
+  language: string
+  cleanup: { enabled: boolean }
   shortcuts: Shortcuts
   styles: Record<StyleContext, Style>
   microphoneId: string
@@ -52,14 +77,59 @@ export interface Settings {
 }
 
 /** What the renderer sees: API keys are replaced by a presence flag. */
-export type PublicSettings = Omit<Settings, 'transcription' | 'cleanup'> & {
-  transcription: Omit<Settings['transcription'], 'apiKey'> & { hasApiKey: boolean }
-  cleanup: Omit<Settings['cleanup'], 'apiKey'> & { hasApiKey: boolean }
-}
+export type PublicSettings = Omit<Settings, ModelRole> & Record<ModelRole, PublicModelSelection>
 
 export type SettingsPatch = {
-  [K in keyof Settings]?: Settings[K] extends object ? Partial<Settings[K]> : Settings[K]
+  [K in Exclude<keyof Settings, ModelRole>]?: Settings[K] extends object ? Partial<Settings[K]> : Settings[K]
+} & { [K in ModelRole]?: ModelSelectionPatch }
+
+export type EndpointTestResult = { ok: true } | { ok: false; error: string }
+
+/** What the model process reports about Apple's models on this Mac. */
+export interface BuiltInStatus {
+  appleSpeech: {
+    available: boolean
+    /** Why Apple's speech-to-text can't be used, when it can't. */
+    reason?: string
+    /** The locale the language setting maps to, or null when Apple doesn't support that language. */
+    locale: string | null
+    /** BCP 47 locales Apple's speech-to-text supports on this Mac, read at runtime. */
+    locales: string[]
+  }
+  appleChat: {
+    available: boolean
+    /** Why Apple's chat model can't be used, when it can't. */
+    reason?: string
+    /** What the user can do about it: turn Apple Intelligence on in System Settings, or wait for its model. */
+    fix?: 'turnOnAppleIntelligence' | 'wait'
+    /** Tokens the model reads and writes per request, read at runtime; null when unavailable. */
+    contextSize: number | null
+  }
+  /** The selected downloaded speech-to-text model, when one is selected and installed. */
+  speechToText?: {
+    model: string
+    name: string
+    /** Whether it transcribes the language setting; an empty setting means it auto-detects. */
+    supported: boolean
+    /** ISO language codes, or null when it isn't limited to a known set. */
+    languages: string[] | null
+  }
+  /** The selected downloaded chat model, when one is selected and installed. */
+  chat?: {
+    model: string
+    name: string
+    /** Tokens a request and its answer may use together: the model's own limit, capped to what fits in memory. */
+    contextSize: number
+  }
 }
+
+/**
+ * An Apple language-asset download, reported while it runs, or a downloaded model's slow first load, which
+ * compiles it for this Mac.
+ */
+export type ModelProgress =
+  | { kind: 'appleSpeechAssets'; locale: string; fraction: number }
+  | { kind: 'preparingModel'; modelId: string; name: string; preparing: boolean }
 
 export interface DictionaryEntry {
   id: string

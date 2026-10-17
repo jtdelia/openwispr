@@ -378,6 +378,48 @@ textarea {
   background: color-mix(in srgb, var(--ok) 12%, transparent);
 }
 
+.badge.warn {
+  color: var(--danger);
+  background: color-mix(in srgb, var(--danger) 12%, transparent);
+}
+
+.setting-title .badge {
+  margin-left: 8px;
+}
+
+.model-group {
+  margin-top: 12px;
+}
+
+.model-group > .section-title {
+  margin: 0 0 2px;
+  font-size: 13px;
+}
+
+.model-progress {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-top: 6px;
+}
+
+.model-progress progress {
+  width: 200px;
+}
+
+.model-actions {
+  align-items: center;
+  gap: 12px;
+}
+
+.model-check {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 6px;
+  margin-top: 8px;
+}
+
 .settings-section {
   display: flex;
   flex-direction: column;

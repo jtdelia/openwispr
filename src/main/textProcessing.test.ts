@@ -3,6 +3,7 @@ import {
   appCategory,
   applyReplacements,
   applySnippets,
+  cleanupMessages,
   joinWithContext,
   sanitizeCleanup,
   styleContext,
@@ -57,6 +58,47 @@ describe('transcriptionPrompt', () => {
   })
 })
 
+describe('cleanupMessages', () => {
+  const input = {
+    transcript: 'once i finish the draft',
+    style: 'casual' as const,
+    category: 'other' as const,
+    appName: 'Notes',
+    beforeText: "I'll send it over",
+    dictionary: [{ id: '1', word: 'OpenWispr' }],
+    userName: 'Jane',
+  }
+
+  it('passes the app and the text before the cursor as context, and says when it continues a sentence', () => {
+    const [system, user] = cleanupMessages(input)
+    expect(user).toEqual({
+      role: 'user',
+      content: '<context>\nApp: Notes\nText before the cursor: "I\'ll send it over"\n</context>\n<transcript>\nonce i finish the draft\n</transcript>',
+    })
+    expect(system.content).toMatch(/continues a sentence/)
+    expect(system.content).toMatch(/Never repeat it/)
+    expect(system.content).toContain('OpenWispr')
+    expect(cleanupMessages({ ...input, beforeText: '' })[0].content).not.toMatch(/Never repeat/)
+  })
+
+  it('quotes only the end of a long text before the cursor, and leaves out context it has none of', () => {
+    const [, long] = cleanupMessages({ ...input, beforeText: `${'x'.repeat(1000)} the end` })
+    expect(long.content).toContain('the end"')
+    expect(long.content.length).toBeLessThan(600)
+    const [, bare] = cleanupMessages({ ...input, appName: '', beforeText: '' })
+    expect(bare.content).toBe('<transcript>\nonce i finish the draft\n</transcript>')
+  })
+
+  it("forbids greetings and sign-offs the speaker didn't say", () => {
+    expect(cleanupMessages(input)[0].content).toMatch(/greeting or sign-off that wasn't spoken/)
+  })
+
+  it('leaves out the continuation rule after a finished sentence or with nothing before the cursor', () => {
+    expect(cleanupMessages({ ...input, beforeText: 'Done.' })[0].content).not.toMatch(/continues a sentence/)
+    expect(cleanupMessages({ ...input, beforeText: '' })[0].content).not.toMatch(/continues a sentence/)
+  })
+})
+
 describe('sanitizeCleanup', () => {
   it('strips quotes the model added', () => {
     expect(sanitizeCleanup('"Hello there."', 'hello there')).toBe('Hello there.')
@@ -65,6 +107,23 @@ describe('sanitizeCleanup', () => {
   it('falls back when the model answered instead of formatting', () => {
     const transcript = 'what is the capital of france'
     expect(sanitizeCleanup('The capital of France is Paris. '.repeat(10), transcript)).toBe(transcript)
+  })
+
+  it('drops the text before the cursor when the model repeats it', () => {
+    expect(sanitizeCleanup("I'll send it over once I finish the draft.", 'um once i finish the draft', "I'll send it over")).toBe(
+      'once I finish the draft.',
+    )
+  })
+
+  it('drops a repeated last sentence of the text before the cursor', () => {
+    const before = 'Thanks for the notes. I will send it over'
+    expect(sanitizeCleanup('I will send it over tomorrow.', 'tomorrow', before)).toBe('tomorrow.')
+  })
+
+  it('keeps the words when the speaker said them too', () => {
+    expect(sanitizeCleanup('See you soon, see you soon.', 'see you soon see you soon', 'See you soon')).toBe(
+      'See you soon, see you soon.',
+    )
   })
 })
 

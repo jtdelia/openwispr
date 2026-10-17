@@ -1,0 +1,34 @@
+// swift-tools-version: 6.2
+import PackageDescription
+
+let package = Package(
+    name: "OpenWisprModels",
+    platforms: [.macOS("26.0")],
+    dependencies: [
+        // No traits: skips the NeMo text-normalization binary, which only FluidAudio's text-to-speech uses.
+        .package(url: "https://github.com/FluidInference/FluidAudio", exact: "0.17.7", traits: []),
+        .package(url: "https://github.com/argmaxinc/argmax-oss-swift", exact: "1.1.1"),
+        .package(url: "https://github.com/ml-explore/mlx-swift", exact: "0.32.3"),
+        .package(url: "https://github.com/ml-explore/mlx-swift-lm", exact: "3.32.3"),
+        .package(url: "https://github.com/huggingface/swift-transformers", exact: "1.3.5"),
+    ],
+    targets: [
+        .executableTarget(
+            name: "openwispr-models",
+            dependencies: [
+                .product(name: "FluidAudio", package: "FluidAudio"),
+                .product(name: "WhisperKit", package: "argmax-oss-swift"),
+                .product(name: "MLX", package: "mlx-swift"),
+                .product(name: "MLXLLM", package: "mlx-swift-lm"),
+                .product(name: "MLXLMCommon", package: "mlx-swift-lm"),
+                .product(name: "MLXHuggingFace", package: "mlx-swift-lm"),
+                .product(name: "Tokenizers", package: "swift-transformers"),
+            ],
+            path: "Sources/OpenWisprModels",
+            linkerSettings: [
+                // Embeds Info.plist so the process has a stable identity and a Speech Recognition usage string.
+                .unsafeFlags(["-Xlinker", "-sectcreate", "-Xlinker", "__TEXT", "-Xlinker", "__info_plist", "-Xlinker", "Info.plist"]),
+            ]
+        ),
+    ]
+)

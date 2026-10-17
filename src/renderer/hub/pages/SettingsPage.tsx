@@ -1,35 +1,54 @@
 import { useEffect, useState } from 'react'
 import { comboLabel, MODIFIER_KEYS } from '../../../shared/keycodes'
+import { isRunnable, offeredModel, type ModelEngine, type ModelLibrary, type ModelStatus } from '../../../shared/modelLibrary'
 import { microphoneHelp } from '../../../shared/permissions'
 import {
+  APPLE_SELECTION,
   DEFAULT_SHORTCUTS,
+  isAppleSelection,
   SHORTCUT_LABELS,
+  type BuiltInStatus,
+  type EndpointTestResult,
+  type ModelProgress,
+  type ModelRole,
+  type PublicModelSelection,
   type PublicSettings,
   type SettingsPatch,
   type ShortcutAction,
 } from '../../../shared/types'
+import { formatBytes, percent } from '../format'
 import { useData } from '../useData'
+import { ModelsSection } from './ModelsSection'
 
 const api = window.openwispr
 
-interface Preset {
+/** An Endpoint offered by name, with the models it's set up with for each role. */
+interface KnownEndpoint {
   label: string
   baseUrl: string
-  transcriptionModel: string
-  cleanupModel: string
+  speechToTextModel: string
+  chatModel: string
 }
 
-const PRESETS: Preset[] = [
-  { label: 'OpenAI', baseUrl: 'https://api.openai.com/v1', transcriptionModel: 'gpt-4o-mini-transcribe', cleanupModel: 'gpt-4.1-mini' },
-  { label: 'Groq', baseUrl: 'https://api.groq.com/openai/v1', transcriptionModel: 'whisper-large-v3-turbo', cleanupModel: 'llama-3.3-70b-versatile' },
-  { label: 'Local (Speaches / faster-whisper)', baseUrl: 'http://localhost:8000/v1', transcriptionModel: 'Systran/faster-distil-whisper-large-v3', cleanupModel: '' },
+const APPLE_OPTION = 'Apple (on this Mac)'
+const MODEL_OPTION_PREFIX = 'model:'
+
+const KNOWN_ENDPOINTS: KnownEndpoint[] = [
+  { label: 'OpenAI', baseUrl: 'https://api.openai.com/v1', speechToTextModel: 'gpt-4o-mini-transcribe', chatModel: 'gpt-4.1-mini' },
+  { label: 'Groq', baseUrl: 'https://api.groq.com/openai/v1', speechToTextModel: 'whisper-large-v3-turbo', chatModel: 'llama-3.3-70b-versatile' },
+  { label: 'Local (Speaches / faster-whisper)', baseUrl: 'http://localhost:8000/v1', speechToTextModel: 'Systran/faster-distil-whisper-large-v3', chatModel: '' },
 ]
+const CHAT_ENDPOINTS = KNOWN_ENDPOINTS.filter((e) => e.chatModel)
+
+/** The Apple Intelligence & Siri pane; there's no deep link to the switch itself. */
+const APPLE_INTELLIGENCE_SETTINGS = 'x-apple.systempreferences:com.apple.Siri-Settings.extension'
 
 const update = (patch: SettingsPatch) => void api.updateSettings(patch)
 
 export function SettingsPage() {
   const [settings] = useData(api.getSettings, ['settings'])
   const [permissions] = useData(api.getPermissions, ['permissions'])
+  const [library] = useData(api.getModelLibrary, ['models'])
   const [micHelp, setMicHelp] = useState<string | null>(null)
   if (!settings) return null
 
@@ -71,7 +90,9 @@ export function SettingsPage() {
         )}
       </section>
 
-      <ProviderSection settings={settings} />
+      <ModelSections settings={settings} library={library} />
+
+      {library && <ModelsSection library={library} settings={settings} />}
 
       <section className="card settings-section">
         <h2>Shortcuts</h2>
@@ -115,76 +136,463 @@ export function SettingsPage() {
   )
 }
 
-function ProviderSection({ settings }: { settings: PublicSettings }) {
-  const { transcription, cleanup } = settings
-  const applyPreset = (label: string) => {
-    const preset = PRESETS.find((p) => p.label === label)
-    if (!preset) return
-    update({
-      transcription: { baseUrl: preset.baseUrl, model: preset.transcriptionModel },
-      cleanup: preset.cleanupModel
-        ? { baseUrl: preset.baseUrl, model: preset.cleanupModel }
-        : { enabled: false },
-    })
+/** Installed models for `role` the model process can run, plus the selected one even if it isn't installed. */
+function modelOptions(library: ModelLibrary | null, role: ModelRole, selection: PublicModelSelection): ModelStatus[] {
+  return (library?.models ?? []).filter(
+    ({ model, state }) =>
+      model.task === role &&
+      ((state.kind === 'installed' && isRunnable(model)) || (selection.kind === 'builtIn' && selection.modelId === model.id)),
+  )
+}
+
+function ModelSections({ settings, library }: { settings: PublicSettings; library: ModelLibrary | null }) {
+  const { speechToText, chat, cleanup } = settings
+  const isAppleSpeech = isAppleSelection(speechToText)
+  const isAppleChat = isAppleSelection(chat)
+  const selectSpeech = (label: string) => {
+    if (selectBuiltIn('speechToText', label)) return
+    const endpoint = KNOWN_ENDPOINTS.find((e) => e.label === label)
+    if (endpoint) update({ speechToText: { kind: 'endpoint', baseUrl: endpoint.baseUrl, model: endpoint.speechToTextModel } })
   }
-  const activePreset = PRESETS.find((p) => p.baseUrl === transcription.baseUrl)?.label ?? 'Custom'
+  const selectChat = (label: string) => {
+    if (selectBuiltIn('chat', label)) return
+    const endpoint = CHAT_ENDPOINTS.find((e) => e.label === label)
+    if (endpoint) update({ chat: { kind: 'endpoint', baseUrl: endpoint.baseUrl, model: endpoint.chatModel } })
+  }
 
   return (
     <>
       <section className="card settings-section">
-        <h2>Transcription</h2>
-        <p className="muted small">Any OpenAI-compatible speech-to-text endpoint.</p>
-        <SettingRow title="Provider">
-          <select value={activePreset} onChange={(e) => applyPreset(e.target.value)}>
-            {PRESETS.map((p) => (
-              <option key={p.label}>{p.label}</option>
-            ))}
-            <option disabled>Custom</option>
-          </select>
-        </SettingRow>
-        <SettingRow title="Base URL">
-          <TextSetting value={transcription.baseUrl} onSave={(baseUrl) => update({ transcription: { baseUrl } })} />
-        </SettingRow>
-        <SettingRow title="Model">
-          <TextSetting value={transcription.model} onSave={(model) => update({ transcription: { model } })} />
-        </SettingRow>
-        <SettingRow title="API key">
-          <SecretSetting hasValue={transcription.hasApiKey} onSave={(apiKey) => update({ transcription: { apiKey } })} />
-        </SettingRow>
-        <SettingRow title="Language" description="ISO code like en or de. Leave empty to auto-detect.">
-          <TextSetting
-            value={transcription.language}
-            placeholder="auto"
-            onSave={(language) => update({ transcription: { language } })}
+        <h2>Speech-to-text</h2>
+        <p className="muted small">
+          Apple’s on-device model, a downloaded Built-in model, or any OpenAI-compatible speech-to-text Endpoint.
+        </p>
+        <SettingRow title="Model or Endpoint">
+          <ModelSelect
+            value={selectedOption(KNOWN_ENDPOINTS, speechToText)}
+            models={modelOptions(library, 'speechToText', speechToText)}
+            endpoints={KNOWN_ENDPOINTS}
+            onChange={selectSpeech}
           />
         </SettingRow>
+        <SelectionSettings role="speechToText" selection={speechToText} library={library} />
+        <SettingRow
+          title="Language"
+          description={
+            isAppleSpeech
+              ? 'ISO code like en or de. Leave empty to use your Mac’s language.'
+              : 'ISO code like en or de. Leave empty to auto-detect.'
+          }
+        >
+          <TextSetting value={settings.language} placeholder="auto" onSave={(language) => update({ language })} />
+        </SettingRow>
+        {isAppleSpeech && <AppleSpeechStatus language={settings.language} library={library} />}
+        {speechToText.kind === 'builtIn' && !isAppleSpeech && (
+          <DownloadedSpeechStatus modelId={speechToText.modelId} language={settings.language} library={library} />
+        )}
       </section>
 
       <section className="card settings-section">
-        <h2>AI cleanup</h2>
+        <h2>Chat</h2>
+        <p className="muted small">Cleans up dictations and writes meeting titles and summaries.</p>
         <Toggle
-          title="Clean up transcripts with an LLM"
+          title="Clean up dictations"
           description="Removes filler words, applies self-corrections, fixes punctuation and matches your style."
           checked={cleanup.enabled}
           onChange={(enabled) => update({ cleanup: { enabled } })}
         />
-        {cleanup.enabled && (
+        <SettingRow title="Model or Endpoint">
+          <ModelSelect
+            value={selectedOption(CHAT_ENDPOINTS, chat)}
+            models={modelOptions(library, 'chat', chat)}
+            endpoints={CHAT_ENDPOINTS}
+            onChange={selectChat}
+          />
+        </SettingRow>
+        <SelectionSettings
+          role="chat"
+          selection={chat}
+          library={library}
+          keyDescription={
+            chat.kind === 'endpoint' && speechToText.kind === 'endpoint' && chat.baseUrl === speechToText.baseUrl
+              ? 'Uses the speech-to-text key when left empty.'
+              : undefined
+          }
+        />
+        {isAppleChat && <AppleChatStatus library={library} />}
+        {chat.kind === 'builtIn' && !isAppleChat && <DownloadedChatStatus modelId={chat.modelId} />}
+      </section>
+    </>
+  )
+}
+
+/** Selects Apple or a downloaded model when `label` is one of their options. */
+function selectBuiltIn(role: ModelRole, label: string): boolean {
+  if (label === APPLE_OPTION) {
+    update({ [role]: APPLE_SELECTION })
+    return true
+  }
+  if (label.startsWith(MODEL_OPTION_PREFIX)) {
+    update({ [role]: { kind: 'builtIn', modelId: label.slice(MODEL_OPTION_PREFIX.length) } })
+    return true
+  }
+  return false
+}
+
+function selectedOption(endpoints: KnownEndpoint[], selection: PublicModelSelection): string {
+  if (selection.kind === 'builtIn') {
+    return isAppleSelection(selection) ? APPLE_OPTION : `${MODEL_OPTION_PREFIX}${selection.modelId}`
+  }
+  return endpoints.find((e) => e.baseUrl === selection.baseUrl)?.label ?? 'Custom'
+}
+
+function ModelSelect(props: {
+  value: string
+  models?: ModelStatus[]
+  endpoints: KnownEndpoint[]
+  onChange: (label: string) => void
+}) {
+  return (
+    <select value={props.value} onChange={(e) => props.onChange(e.target.value)}>
+      <option>{APPLE_OPTION}</option>
+      {props.models?.map(({ model }) => (
+        <option key={model.id} value={`${MODEL_OPTION_PREFIX}${model.id}`}>
+          {model.name} (on this Mac)
+        </option>
+      ))}
+      {props.endpoints.map((e) => (
+        <option key={e.label}>{e.label}</option>
+      ))}
+      <option disabled>Custom</option>
+    </select>
+  )
+}
+
+function SelectionSettings(props: {
+  role: ModelRole
+  selection: PublicModelSelection
+  library: ModelLibrary | null
+  keyDescription?: string
+}) {
+  const { role, selection } = props
+  switch (selection.kind) {
+    case 'builtIn':
+      if (role === 'speechToText' && isAppleSelection(selection)) {
+        return (
+          <SettingRow title="Model" description="Apple’s on-device speech-to-text. Your audio never leaves this Mac.">
+            <span className="badge ok">Built-in</span>
+          </SettingRow>
+        )
+      }
+      if (role === 'chat' && isAppleSelection(selection)) {
+        return (
+          <SettingRow title="Model" description="Apple Intelligence’s on-device model. Your text never leaves this Mac.">
+            <span className="badge ok">Built-in</span>
+          </SettingRow>
+        )
+      }
+      {
+        const status = props.library?.models.find((s) => s.model.id === selection.modelId)
+        return status ? <DownloadedModel role={role} status={status} /> : null
+      }
+    case 'endpoint':
+      return (
+        <>
+          <SettingRow title="Base URL">
+            <TextSetting value={selection.baseUrl} onSave={(baseUrl) => update({ [role]: { kind: 'endpoint', baseUrl } })} />
+          </SettingRow>
+          <SettingRow title="Model">
+            <TextSetting value={selection.model} onSave={(model) => update({ [role]: { kind: 'endpoint', model } })} />
+          </SettingRow>
+          <SettingRow title="API key" description={props.keyDescription}>
+            <SecretSetting
+              hasValue={selection.hasApiKey}
+              onSave={(apiKey) => update({ [role]: { kind: 'endpoint', apiKey } })}
+            />
+          </SettingRow>
+          <EndpointTest role={role} />
+        </>
+      )
+    default: {
+      const unreachable: never = selection
+      throw new Error(`unhandled model selection ${JSON.stringify(unreachable)}`)
+    }
+  }
+}
+
+const DOWNLOADED_MODEL_TEXT: Record<ModelRole, { private: string; preparing: string; usedBy: string }> = {
+  speechToText: {
+    private: 'Your audio never leaves this Mac.',
+    preparing: 'The first load compiles it and can take a couple of minutes.',
+    usedBy: 'Dictation uses it',
+  },
+  chat: {
+    private: 'Your text never leaves this Mac.',
+    preparing: 'Loading it into memory takes a few seconds.',
+    usedBy: 'Cleanup and meeting summaries use it',
+  },
+}
+
+/** The selected downloaded model: ready, preparing, or still to be downloaded. */
+function DownloadedModel({ role, status }: { role: ModelRole; status: ModelStatus }) {
+  const { model, state } = status
+  const text = DOWNLOADED_MODEL_TEXT[role]
+  const useApple = (
+    <button className="link" onClick={() => update({ [role]: APPLE_SELECTION })}>
+      Use Apple
+    </button>
+  )
+  switch (state.kind) {
+    case 'installed':
+      if (!isRunnable(model)) {
+        return (
+          <SettingRow title="Model" description={`${model.name} needs an engine OpenWispr doesn’t have yet.`}>
+            {useApple}
+          </SettingRow>
+        )
+      }
+      return (
+        <SettingRow
+          title="Model"
+          description={
+            status.preparing
+              ? `Preparing ${model.name} for this Mac… ${text.preparing}`
+              : `${model.name} runs on this Mac. ${text.private}`
+          }
+        >
+          <span className="badge ok">Built-in</span>
+        </SettingRow>
+      )
+    case 'downloading':
+      return (
+        <SettingRow
+          title="Model"
+          description={`Downloading ${model.name}… ${percent(state.bytesDone, state.totalBytes)}%. ${text.usedBy} once it’s installed.`}
+        >
+          {useApple}
+        </SettingRow>
+      )
+    case 'notDownloaded':
+    case 'paused':
+      return (
+        <SettingRow title="Model" description={`${model.name} isn’t downloaded yet.`}>
+          <div className="secret">
+            {useApple}
+            <button className="button" onClick={() => void api.downloadModel(model.id)}>
+              {state.kind === 'paused' ? 'Resume' : 'Download'} ({formatBytes(model.sizeBytes)})
+            </button>
+          </div>
+        </SettingRow>
+      )
+    default: {
+      const unreachable: never = state
+      throw new Error(`unhandled download state ${JSON.stringify(unreachable)}`)
+    }
+  }
+}
+
+/**
+ * One click to switch `role` to a downloaded model, downloading it first if needed; the selection row
+ * then shows the download, and the role uses the model once it's installed.
+ */
+function ModelOffer({ library, role, engine }: { library: ModelLibrary | null; role: ModelRole; engine?: ModelEngine }) {
+  const offer = offeredModel(library?.models ?? [], role, engine)
+  if (!offer) return null
+  const { model, state } = offer
+  const select = () => {
+    if (state.kind !== 'installed') void api.downloadModel(model.id)
+    update({ [role]: { kind: 'builtIn', modelId: model.id } })
+  }
+  return (
+    <button className="button" onClick={select}>
+      {state.kind === 'installed' ? `Use ${model.name}` : `Download ${model.name} (${formatBytes(model.sizeBytes)})`}
+    </button>
+  )
+}
+
+const languageNames = new Intl.DisplayNames(undefined, { type: 'language' })
+
+function languageName(code: string): string {
+  if (!code) return 'your Mac’s language'
+  try {
+    return languageNames.of(code) ?? code
+  } catch {
+    return code
+  }
+}
+
+/** Whether Apple supports the language setting, and its language-asset downloads as they run. */
+function AppleSpeechStatus({ language, library }: { language: string; library: ModelLibrary | null }) {
+  const [status, setStatus] = useState<BuiltInStatus | { error: string } | null>(null)
+  const [download, setDownload] = useState<Extract<ModelProgress, { kind: 'appleSpeechAssets' }> | null>(null)
+
+  useEffect(() => {
+    let current = true
+    void api.getBuiltInStatus().then(
+      (next) => current && setStatus(next),
+      (error: unknown) => current && setStatus({ error: error instanceof Error ? error.message : String(error) }),
+    )
+    return () => {
+      current = false
+    }
+  }, [language])
+
+  useEffect(
+    () =>
+      api.onModelProgress((progress) => {
+        switch (progress.kind) {
+          case 'appleSpeechAssets':
+            setDownload(progress.fraction < 1 ? progress : null)
+            return
+          case 'preparingModel':
+            return
+          default: {
+            const unreachable: never = progress
+            throw new Error(`unhandled model progress ${JSON.stringify(unreachable)}`)
+          }
+        }
+      }),
+    [],
+  )
+
+  const downloadNotice = download && (
+    <p className="muted small">
+      Downloading Apple’s speech-to-text for {download.locale}… {Math.round(download.fraction * 100)}%
+    </p>
+  )
+  if (status === null) return downloadNotice
+  if ('error' in status) return <p className="error-text small">Couldn’t check Apple’s speech-to-text: {status.error}</p>
+  const { appleSpeech } = status
+  if (!appleSpeech.available) return <p className="error-text small">{appleSpeech.reason}</p>
+  if (appleSpeech.locale === null) {
+    const supported = [...new Set(appleSpeech.locales.map((locale) => languageName(locale.split('-')[0])))]
+    return (
+      <div className="setting-row">
+        <p className="error-text small">
+          Apple’s speech-to-text doesn’t support {languageName(language)}. On this Mac it supports{' '}
+          {supported.join(', ')}. Choose one of these, use a Whisper model, or use an Endpoint for this language.
+        </p>
+        <ModelOffer library={library} role="speechToText" engine="whisperKit" />
+      </div>
+    )
+  }
+  return (
+    downloadNotice ?? (
+      <p className="muted small">
+        Transcribes as {appleSpeech.locale}. The first dictation in a new language downloads Apple’s language files.
+      </p>
+    )
+  )
+}
+
+/** Whether Apple Intelligence is on, checked again when the user comes back from System Settings. */
+function AppleChatStatus({ library }: { library: ModelLibrary | null }) {
+  const [status, setStatus] = useState<BuiltInStatus['appleChat'] | { error: string } | null>(null)
+
+  useEffect(() => {
+    let current = true
+    const check = () =>
+      void api.getBuiltInStatus().then(
+        (next) => current && setStatus(next.appleChat),
+        (error: unknown) => current && setStatus({ error: error instanceof Error ? error.message : String(error) }),
+      )
+    check()
+    window.addEventListener('focus', check)
+    return () => {
+      current = false
+      window.removeEventListener('focus', check)
+    }
+  }, [])
+
+  if (status === null) return null
+  if ('error' in status) return <p className="error-text small">Couldn’t check Apple’s chat model: {status.error}</p>
+  if (status.available) {
+    return <p className="muted small">Reads up to {status.contextSize} tokens per request on this Mac.</p>
+  }
+  return (
+    <div className="setting-row">
+      <p className="error-text small">
+        {status.reason}, so dictations are inserted without Cleanup and meetings get no title or summary.{' '}
+        {status.fix === 'turnOnAppleIntelligence' && (
           <>
-            <SettingRow title="Base URL" description="OpenAI-compatible chat completions endpoint.">
-              <TextSetting value={cleanup.baseUrl} onSave={(baseUrl) => update({ cleanup: { baseUrl } })} />
-            </SettingRow>
-            <SettingRow title="Model">
-              <TextSetting value={cleanup.model} onSave={(model) => update({ cleanup: { model } })} />
-            </SettingRow>
-            <SettingRow
-              title="API key"
-              description={cleanup.baseUrl === transcription.baseUrl ? 'Uses the transcription key when left empty.' : undefined}
-            >
-              <SecretSetting hasValue={cleanup.hasApiKey} onSave={(apiKey) => update({ cleanup: { apiKey } })} />
-            </SettingRow>
+            Turn it on in{' '}
+            <a href={APPLE_INTELLIGENCE_SETTINGS} target="_blank" rel="noreferrer">
+              System Settings → Apple Intelligence &amp; Siri
+            </a>
+            , or use an Endpoint.{' '}
           </>
         )}
-      </section>
+        {status.fix === 'wait' && 'It’s usable once the download finishes. '}
+        You can also use a chat model downloaded to this Mac.
+      </p>
+      <ModelOffer library={library} role="chat" />
+    </div>
+  )
+}
+
+/** How much the selected downloaded chat model reads per request. */
+function DownloadedChatStatus({ modelId }: { modelId: string }) {
+  const [status, setStatus] = useState<BuiltInStatus['chat'] | null>(null)
+
+  useEffect(() => {
+    let current = true
+    void api.getBuiltInStatus().then(
+      (next) => current && setStatus(next.chat ?? null),
+      () => current && setStatus(null),
+    )
+    return () => {
+      current = false
+    }
+  }, [modelId])
+
+  if (!status) return null
+  return <p className="muted small">Reads up to {status.contextSize} tokens per request.</p>
+}
+
+/** Whether the selected downloaded speech-to-text model supports the language setting. */
+function DownloadedSpeechStatus({ modelId, language, library }: { modelId: string; language: string; library: ModelLibrary | null }) {
+  const [status, setStatus] = useState<BuiltInStatus['speechToText'] | null>(null)
+
+  useEffect(() => {
+    let current = true
+    void api.getBuiltInStatus().then(
+      (next) => current && setStatus(next.speechToText ?? null),
+      () => current && setStatus(null),
+    )
+    return () => {
+      current = false
+    }
+  }, [modelId, language])
+
+  if (!status || status.supported || status.languages === null) return null
+  return (
+    <div className="setting-row">
+      <p className="error-text small">
+        {status.name} doesn’t support {languageName(language)}. It supports {status.languages.map(languageName).join(', ')}.
+        Choose one of these, or use a Whisper model or an Endpoint for this language.
+      </p>
+      <ModelOffer library={library} role="speechToText" engine="whisperKit" />
+    </div>
+  )
+}
+
+function EndpointTest({ role }: { role: ModelRole }) {
+  const [result, setResult] = useState<EndpointTestResult | 'testing' | null>(null)
+  const test = () => {
+    setResult('testing')
+    void api.testEndpoint(role).then(setResult, (error: unknown) => setResult({ ok: false, error: String(error) }))
+  }
+  return (
+    <>
+      <SettingRow title="Test Endpoint" description="Sends a tiny request to check it answers.">
+        <div className="secret">
+          {result !== null && result !== 'testing' && result.ok && <span className="badge ok">Working</span>}
+          <button className="button" disabled={result === 'testing'} onClick={test}>
+            {result === 'testing' ? 'Testing…' : 'Test'}
+          </button>
+        </div>
+      </SettingRow>
+      {result !== null && result !== 'testing' && !result.ok && <p className="error-text small">{result.error}</p>}
     </>
   )
 }
