@@ -135,11 +135,18 @@ export class ModelProcess {
     })
   }
 
+  get running(): boolean {
+    return this.connection !== null
+  }
+
   stop(): void {
     this.clearIdleTimer()
     const connection = this.connection
     this.connection = null
     connection?.stop()
+    const error = new ModelError('modelFailed', 'The model process was stopped')
+    for (const { reject } of this.pending.values()) reject(error)
+    this.pending.clear()
   }
 
   private connect(): ModelProcessConnection {

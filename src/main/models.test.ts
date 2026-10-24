@@ -782,6 +782,23 @@ describe('settings migration', () => {
     expect(sent[0].headers.Authorization).toBe('Bearer sk-openai')
   })
 
+  it('drops the API key when the base URL moves to another server, so it is never sent there', () => {
+    const openAi = applySettingsPatch(loadSettings({}), {
+      speechToText: { kind: 'endpoint', baseUrl: 'https://api.openai.com/v1', model: 'gpt-4o-mini-transcribe', apiKey: 'enc:openai' },
+    })
+
+    const samePath = applySettingsPatch(openAi, { speechToText: { kind: 'endpoint', baseUrl: 'https://api.openai.com/v2' } })
+    expect(samePath.speechToText).toMatchObject({ apiKey: 'enc:openai' })
+    const groq = applySettingsPatch(openAi, {
+      speechToText: { kind: 'endpoint', baseUrl: 'https://api.groq.com/openai/v1', model: 'whisper-large-v3-turbo' },
+    })
+    expect(groq.speechToText).toMatchObject({ baseUrl: 'https://api.groq.com/openai/v1', apiKey: '' })
+    const withKey = applySettingsPatch(openAi, {
+      speechToText: { kind: 'endpoint', baseUrl: 'https://api.groq.com/openai/v1', apiKey: 'enc:groq' },
+    })
+    expect(withKey.speechToText).toMatchObject({ apiKey: 'enc:groq' })
+  })
+
   it('leaves already-migrated Endpoint selections alone', () => {
     const migrated = {
       speechToText: { kind: 'endpoint', baseUrl: 'https://api.openai.com/v1', model: 'gpt-4o-mini-transcribe', apiKey: '' },

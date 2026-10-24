@@ -69,18 +69,28 @@ function applySelectionPatch(current: ModelSelection, patch: ModelSelectionPatch
       return { kind: 'builtIn', modelId: patch.modelId }
     case 'endpoint': {
       const base = current.kind === 'endpoint' ? current : { baseUrl: '', model: '', apiKey: '' }
-      return {
-        kind: 'endpoint',
-        baseUrl: patch.baseUrl ?? base.baseUrl,
-        model: patch.model ?? base.model,
-        apiKey: patch.apiKey ?? base.apiKey,
-      }
+      const baseUrl = patch.baseUrl ?? base.baseUrl
+      // A key is a credential for one server; never send it to another.
+      const keptKey = sameOrigin(baseUrl, base.baseUrl) ? base.apiKey : ''
+      return { kind: 'endpoint', baseUrl, model: patch.model ?? base.model, apiKey: patch.apiKey ?? keptKey }
     }
     default: {
       const unreachable: never = patch
       throw new Error(`unhandled model selection ${JSON.stringify(unreachable)}`)
     }
   }
+}
+
+function sameOrigin(a: string, b: string): boolean {
+  const origin = (url: string) => {
+    try {
+      const { origin } = new URL(url.trim())
+      return origin === 'null' ? url.trim() : origin
+    } catch {
+      return url.trim()
+    }
+  }
+  return origin(a) === origin(b)
 }
 
 export function applySettingsPatch(base: Settings, patch: SettingsPatch): Settings {

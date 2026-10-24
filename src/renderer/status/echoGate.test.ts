@@ -12,7 +12,7 @@ function feed(detector: EchoDetector, source: 'mic' | 'system', from: number, to
 }
 
 function setup() {
-  const detector = new EchoDetector()
+  const detector = new EchoDetector({ slowAnalysisMs: Number.POSITIVE_INFINITY })
   const gate = new EchoGate(detector, RATE)
   const sent: number[] = []
   const hold = (start: number, end: number) =>

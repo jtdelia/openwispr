@@ -5,7 +5,7 @@ import { delayed, mix, noise, RATE } from './testAudio'
 const FRAME = 1024
 
 function run(mic: Float32Array, system: Float32Array, options: Partial<EchoDetectorConfig> = {}): EchoDetector {
-  const detector = new EchoDetector(options)
+  const detector = new EchoDetector({ slowAnalysisMs: Number.POSITIVE_INFINITY, ...options })
   for (let at = 0; at < mic.length; at += FRAME) {
     detector.push('system', system.subarray(at, at + FRAME), at)
     detector.push('mic', mic.subarray(at, at + FRAME), at)

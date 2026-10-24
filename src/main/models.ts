@@ -14,7 +14,15 @@ import {
 import { isRunnable, type ModelEntry, type ModelLibrary, type ModelStatus, type RepoCheck } from '../shared/modelLibrary'
 import { checkHubRepo } from './hubCompatibility'
 import { ModelDownloads, type ModelManifest } from './modelDownloads'
-import { ModelError, ModelProcess, type ModelProcessTransport, type ModelRef, type TranscribeResult } from './modelProcess'
+import {
+  ModelError,
+  ModelProcess,
+  type ModelProcessTransport,
+  type ModelRef,
+  type ModelRequestBody,
+  type ModelResults,
+  type TranscribeResult,
+} from './modelProcess'
 import { RECOMMENDED_MODELS } from './recommendedModels'
 import { cleanupMaxTokens, cleanupMessages, sanitizeCleanup, type CleanupInput } from './textProcessing'
 import {
@@ -58,6 +66,12 @@ const DEFAULT_MAX_TOKENS = 1024
 const PREPARING_AFTER_MS = 1000
 /** A model needing more than this share of physical memory would likely make the Mac swap. */
 const MEMORY_SHARE = 0.6
+/** How long removing or replacing a model waits for requests using it before stopping the model process. */
+const RELEASE_TIMEOUT_MS = 30_000
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms).unref())
+}
 
 /** 16 kHz mono PCM16 silence. */
 function silentWav(durationMs: number): Buffer {
@@ -111,6 +125,10 @@ export class Models extends EventEmitter<{ progress: [ModelProgress] }> {
   private installed = new Map<string, ModelManifest>()
   private readonly loads = new Map<string, Promise<void>>()
   private readonly preparing = new Set<string>()
+  /** Model process requests in flight, by the downloaded model they read. */
+  private readonly inUse = new Map<string, Set<Promise<unknown>>>()
+  /** Models whose files are being replaced or deleted, which take no new requests. */
+  private readonly releasing = new Set<string>()
   /** Resolves once the installed models have been read, which `availability` relies on. */
   readonly ready: Promise<void>
 
@@ -122,6 +140,7 @@ export class Models extends EventEmitter<{ progress: [ModelProgress] }> {
       dir: deps.modelsDir,
       retryDelayMs: deps.retryDelayMs ?? 2000,
       onChange: () => this.libraryChanged(),
+      release: (id) => this.release(id),
     })
     this.ready = this.refreshInstalled()
   }
@@ -181,8 +200,12 @@ export class Models extends EventEmitter<{ progress: [ModelProgress] }> {
 
   /** Stops a download and discards what it fetched. */
   async cancelDownload(id: string): Promise<void> {
-    await this.downloads.cancel(id)
-    await this.refreshInstalled()
+    try {
+      await this.downloads.cancel(id)
+    } finally {
+      await this.refreshInstalled()
+      this.releasing.delete(id)
+    }
   }
 
   /** Deletes a downloaded model; returns the bytes freed. The selected model of a role can't be removed. */
@@ -196,9 +219,12 @@ export class Models extends EventEmitter<{ progress: [ModelProgress] }> {
       const name = this.installed.get(id)?.name ?? id
       throw new Error(`${name} is selected for ${ROLE_NAMES[role]}. Choose another model in Settings before removing it`)
     }
-    const freed = await this.downloads.remove(id)
-    await this.refreshInstalled()
-    return freed
+    try {
+      return await this.downloads.remove(id)
+    } finally {
+      await this.refreshInstalled()
+      this.releasing.delete(id)
+    }
   }
 
   /**
@@ -310,7 +336,7 @@ export class Models extends EventEmitter<{ progress: [ModelProgress] }> {
     const chat = this.builtIn('chat')
     if (chat === null) return complete(this.deps.fetch, this.endpoint('chat'), messages, options)
     if ('unavailable' in chat) throw new ModelError('unavailable', chat.unavailable)
-    return (await this.process.request({ type: 'complete', model: chat.model, messages, maxTokens })).text.trim()
+    return (await this.request(chat.model, { type: 'complete', model: chat.model, messages, maxTokens })).text.trim()
   }
 
   /**
@@ -363,7 +389,7 @@ export class Models extends EventEmitter<{ progress: [ModelProgress] }> {
   private async transcribeBuiltIn(model: string, wav: Buffer, prompt: string, segments: boolean): Promise<TranscribeResult> {
     const { language } = this.deps.settings()
     try {
-      return await this.process.request({ type: 'transcribe', model, audio: wav.toString('base64'), language, prompt, segments })
+      return await this.request(model, { type: 'transcribe', model, audio: wav.toString('base64'), language, prompt, segments })
     } catch (error) {
       if (error instanceof ModelError && error.code === 'unsupportedLanguage') {
         const isWhisper = this.installed.get(model)?.engine === 'whisperKit'
@@ -394,6 +420,7 @@ export class Models extends EventEmitter<{ progress: [ModelProgress] }> {
     if (id === APPLE_MODEL_ID) return { model: APPLE_MODEL_ID }
     const manifest = this.installed.get(id)
     const roleName = ROLE_NAMES[role]
+    if (this.releasing.has(id)) return { unavailable: `${manifest?.name ?? id} is being updated or removed` }
     if (!manifest) {
       const name = RECOMMENDED_MODELS.find((m) => m.id === id)?.name ?? id
       return { unavailable: `${name} isn't downloaded. Download it or choose another ${roleName} model in Settings` }
@@ -412,8 +439,7 @@ export class Models extends EventEmitter<{ progress: [ModelProgress] }> {
     const name = this.installed.get(id)?.name ?? id
     const { language } = this.deps.settings()
     const timer = setTimeout(() => this.setPreparing(id, name, true), PREPARING_AFTER_MS)
-    const load = this.process
-      .request({ type: 'load', models: [{ role, id, language }] })
+    const load = this.request(id, { type: 'load', models: [{ role, id, language }] })
       .then(() => undefined)
       .finally(() => {
         clearTimeout(timer)
@@ -432,13 +458,75 @@ export class Models extends EventEmitter<{ progress: [ModelProgress] }> {
   }
 
   private async install(model: ModelEntry, userAdded: boolean): Promise<void> {
-    await this.downloads.start(model, { userAdded })
-    await this.refreshInstalled()
+    try {
+      await this.downloads.start(model, { userAdded })
+    } finally {
+      await this.refreshInstalled()
+      this.releasing.delete(model.id)
+    }
     const installed = this.installed.get(model.id)
     if (installed?.task === 'speechToText' && isRunnable(installed)) {
       this.prepare('speechToText', model.id).catch((error: unknown) =>
         console.warn('[models] preparing a downloaded model failed', error),
       )
+    }
+  }
+
+  /** Sends the model process a request that reads model `id`'s files, tracked so `release` can wait for it. */
+  private request<K extends 'transcribe' | 'complete' | 'load'>(
+    id: string,
+    body: Extract<ModelRequestBody, { type: K }>,
+  ): Promise<ModelResults[K]> {
+    const request = this.process.request<K>(body)
+    const using = this.inUse.get(id) ?? new Set<Promise<unknown>>()
+    this.inUse.set(id, using)
+    using.add(request)
+    const settle = () => {
+      using.delete(request)
+      if (using.size === 0 && this.inUse.get(id) === using) this.inUse.delete(id)
+    }
+    request.then(settle, settle)
+    return request
+  }
+
+  /**
+   * Waits for requests using the model to finish, then has the model process unload it and forget its
+   * engine, which holds the files and what the manifest said; a reinstall under this id then loads afresh.
+   */
+  private async release(id: string): Promise<void> {
+    this.releasing.add(id)
+    const deadline = Date.now() + RELEASE_TIMEOUT_MS
+    for (;;) {
+      const using = this.inUse.get(id)
+      if (using) {
+        const left = deadline - Date.now()
+        const settled = await Promise.race([Promise.allSettled(using).then(() => true), sleep(Math.max(left, 0)).then(() => false)])
+        if (!settled) {
+          console.warn(`[models] requests using ${id} didn't finish; stopping the model process`)
+          this.process.stop()
+          return
+        }
+        continue
+      }
+      if (!this.process.running) return
+      let unloadError: unknown
+      const unloaded = await Promise.race([
+        this.process.request({ type: 'unload', models: [id] }).then(
+          () => true,
+          (error: unknown) => {
+            unloadError = error
+            return false
+          },
+        ),
+        sleep(Math.max(deadline - Date.now(), 0)).then(() => false),
+      ])
+      if (!unloaded) {
+        if (unloadError) console.warn('[models] unloading a model failed; stopping the model process instead', unloadError)
+        else console.warn(`[models] unloading ${id} didn't finish; stopping the model process`)
+        this.process.stop()
+        return
+      }
+      if (!this.inUse.has(id)) return
     }
   }
 

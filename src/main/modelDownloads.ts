@@ -25,6 +25,8 @@ export interface ModelDownloadsDeps {
   /** Delay before the first retry of a dropped or stalled transfer; doubles on each further attempt. */
   retryDelayMs: number
   onChange: () => void
+  /** Called before a model's files are deleted or replaced, so nothing still reads them. */
+  release: (id: string) => Promise<void>
 }
 
 interface Job {
@@ -88,6 +90,7 @@ export class ModelDownloads {
     const job = this.jobs.get(id)
     job?.controller.abort()
     await job?.done.catch(() => undefined)
+    await this.deps.release(id)
     await rm(this.folder(id), { recursive: true, force: true })
     this.errors.delete(id)
     this.deps.onChange()
@@ -98,6 +101,7 @@ export class ModelDownloads {
     const job = this.jobs.get(id)
     job?.controller.abort()
     await job?.done.catch(() => undefined)
+    await this.deps.release(id)
     const freed = await diskUsage(this.folder(id))
     await rm(this.folder(id), { recursive: true, force: true })
     this.errors.delete(id)
@@ -147,7 +151,15 @@ export class ModelDownloads {
     const files = (await Promise.all(entry.sources.map((source) => this.plan(source, signal)))).flat()
     const folder = this.folder(entry.id)
     const manifest: ModelManifest = { ...entry, userAdded, installed: false, files }
+    const previous = await this.manifest(entry.id)
     await mkdir(folder, { recursive: true })
+    if (previous) {
+      // Keep the previous hashes on disk until cleanup succeeds, so an interrupted update can
+      // still identify stale files when it resumes.
+      await writeFile(join(folder, MANIFEST), JSON.stringify({ ...previous, installed: false }, null, 2))
+      await this.deps.release(entry.id)
+      await removeStale(folder, previous.files, files)
+    }
     await writeFile(join(folder, MANIFEST), JSON.stringify(manifest, null, 2))
     job.totalBytes = files.reduce((sum, file) => sum + file.size, 0)
     job.bytesDone = await this.bytesOnDisk(entry.id, files)
@@ -237,6 +249,14 @@ export class ModelDownloads {
           if (done) break
           clearTimeout(timer)
           timer = setTimeout(() => stall.abort(new Error('Download stalled')), STALL_TIMEOUT_MS)
+          offset += value.length
+          if (offset > file.size) {
+            await reader.cancel()
+            await handle.truncate(0)
+            job.bytesDone -= offset - value.length
+            // Not retryable: the same file would overrun again.
+            throw new HubError(`${file.path} is larger than Hugging Face lists it, so it was discarded`, res.status)
+          }
           await handle.write(value)
           this.progress(job, value.length)
         }
@@ -283,6 +303,21 @@ async function matches(path: string, file: HubFile): Promise<boolean> {
   const hash = file.sha256 ? createHash('sha256') : createHash('sha1').update(`blob ${file.size}\0`)
   for await (const chunk of createReadStream(path)) hash.update(chunk as Buffer)
   return hash.digest('hex') === (file.sha256 ?? file.gitOid)
+}
+
+/**
+ * Files are skipped once their size matches, so when a model is downloaded again at another revision,
+ * delete those of the earlier one that changed or are gone, once its manifest says it isn't installed.
+ */
+async function removeStale(folder: string, previous: ManifestFile[], files: ManifestFile[]): Promise<void> {
+  const current = new Map(files.map((file) => [file.localPath, file]))
+  const stale = previous.filter((old) => {
+    const next = current.get(old.localPath)
+    return next === undefined || next.gitOid !== old.gitOid || next.sha256 !== old.sha256
+  })
+  await Promise.all(
+    stale.flatMap((file) => [join(folder, file.localPath), join(folder, file.localPath) + PART]).map((p) => rm(p, { force: true })),
+  )
 }
 
 async function sizeOf(path: string): Promise<number | null> {
