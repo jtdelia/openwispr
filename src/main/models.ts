@@ -509,10 +509,23 @@ export class Models extends EventEmitter<{ progress: [ModelProgress] }> {
         continue
       }
       if (!this.process.running) return
-      await this.process.request({ type: 'unload', models: [id] }).catch((error: unknown) => {
-        console.warn('[models] unloading a model failed; stopping the model process instead', error)
+      let unloadError: unknown
+      const unloaded = await Promise.race([
+        this.process.request({ type: 'unload', models: [id] }).then(
+          () => true,
+          (error: unknown) => {
+            unloadError = error
+            return false
+          },
+        ),
+        sleep(Math.max(deadline - Date.now(), 0)).then(() => false),
+      ])
+      if (!unloaded) {
+        if (unloadError) console.warn('[models] unloading a model failed; stopping the model process instead', unloadError)
+        else console.warn(`[models] unloading ${id} didn't finish; stopping the model process`)
         this.process.stop()
-      })
+        return
+      }
       if (!this.inUse.has(id)) return
     }
   }

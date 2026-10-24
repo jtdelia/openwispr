@@ -153,11 +153,14 @@ export class ModelDownloads {
     const manifest: ModelManifest = { ...entry, userAdded, installed: false, files }
     const previous = await this.manifest(entry.id)
     await mkdir(folder, { recursive: true })
-    await writeFile(join(folder, MANIFEST), JSON.stringify(manifest, null, 2))
     if (previous) {
+      // Keep the previous hashes on disk until cleanup succeeds, so an interrupted update can
+      // still identify stale files when it resumes.
+      await writeFile(join(folder, MANIFEST), JSON.stringify({ ...previous, installed: false }, null, 2))
       await this.deps.release(entry.id)
       await removeStale(folder, previous.files, files)
     }
+    await writeFile(join(folder, MANIFEST), JSON.stringify(manifest, null, 2))
     job.totalBytes = files.reduce((sum, file) => sum + file.size, 0)
     job.bytesDone = await this.bytesOnDisk(entry.id, files)
     for (const file of files) await this.fetchFile(folder, file, job)

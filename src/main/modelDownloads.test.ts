@@ -3,7 +3,9 @@ import { mkdtemp, readFile, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import type { ModelEntry } from '../shared/modelLibrary'
 import { fakeHub, gitBlobSha1, sha256, text, type FakeRepo } from './fakeHub'
+import { ModelDownloads } from './modelDownloads'
 import type { ModelProcessTransport, ModelRequest } from './modelProcess'
 import { Models, type ModelSettings } from './models'
 
@@ -283,6 +285,46 @@ describe('Cancelling, removing and disk usage', () => {
     expect(requests.at(-1)).toEqual({ id: expect.any(Number), type: 'unload', models: ['whisper-small'] })
     expect(existsSync(join(dir, 'whisper-small'))).toBe(false)
   })
+
+  it('stops the model process when unloading stalls, then removes the model', async () => {
+    const requests: ModelRequest[] = []
+    let stopped = false
+    const transport: ModelProcessTransport = {
+      start: (handlers) => ({
+        send(request) {
+          requests.push(request)
+          if (request.type !== 'unload') queueMicrotask(() => handlers.message({ type: 'response', id: request.id, result: {} }))
+        },
+        stop() {
+          stopped = true
+          queueMicrotask(() => handlers.exit(null))
+        },
+      }),
+    }
+    const m = models(
+      fakeHub({
+        [WHISPERKIT]: { 'openai_whisper-small_216MB/config.json': text('{"d_model":768}') },
+        [WHISPER_SMALL]: { 'tokenizer.json': text('{"model":{}}'), 'tokenizer_config.json': text('{}') },
+      }),
+      32 * GB,
+      { transport },
+    )
+    await m.download('whisper-small')
+    await vi.waitFor(() => expect(requests.at(-1)?.type).toBe('load'))
+
+    vi.useFakeTimers()
+    try {
+      const removing = m.removeModel('whisper-small')
+      await vi.advanceTimersByTimeAsync(30_000)
+      await removing
+
+      expect(requests.at(-1)).toMatchObject({ type: 'unload', models: ['whisper-small'] })
+      expect(stopped).toBe(true)
+      expect(existsSync(join(dir, 'whisper-small'))).toBe(false)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
 })
 
 describe('Using a downloaded model', () => {
@@ -329,6 +371,62 @@ describe('Recommended models', () => {
 })
 
 describe('Resuming downloads', () => {
+  it('keeps the previous hashes until stale files from an update have been removed', async () => {
+    const repo = 'example/updating-model'
+    const oldRevision = 'old-revision'
+    const newRevision = 'new-revision'
+    const hub = fakeHub({
+      [`${repo}@${oldRevision}`]: { 'weights.bin': text('old!') },
+      [`${repo}@${newRevision}`]: { 'weights.bin': text('new!') },
+    })
+    let finishRelease: () => void = () => undefined
+    const release = vi.fn(
+      () =>
+        new Promise<void>((resolve) => {
+          finishRelease = resolve
+        }),
+    )
+    const downloads = new ModelDownloads({
+      fetch: hub.fetch,
+      dir,
+      retryDelayMs: 0,
+      onChange: () => undefined,
+      release,
+    })
+    const entry = (revision: string): ModelEntry => ({
+      id: 'updating-model',
+      name: 'Updating model',
+      task: 'chat',
+      engine: 'mlx',
+      sources: [{ repo, revision }],
+      sizeBytes: 4,
+      memoryBytes: 4,
+      speed: 'fast',
+      languages: 'English',
+      languageCodes: ['en'],
+    })
+    await downloads.start(entry(oldRevision), { userAdded: true })
+
+    const update = downloads.start(entry(newRevision), { userAdded: true })
+    await vi.waitFor(() => expect(release).toHaveBeenCalledWith('updating-model'))
+    const pending = JSON.parse(await readFile(join(dir, 'updating-model/manifest.json'), 'utf8')) as {
+      installed: boolean
+      files: Array<{ revision: string }>
+    }
+    expect(pending.installed).toBe(false)
+    expect(pending.files[0].revision).toBe(oldRevision)
+
+    finishRelease()
+    await update
+    expect(await readFile(join(dir, 'updating-model/weights.bin'), 'utf8')).toBe('new!')
+    const installed = JSON.parse(await readFile(join(dir, 'updating-model/manifest.json'), 'utf8')) as {
+      installed: boolean
+      files: Array<{ revision: string }>
+    }
+    expect(installed.installed).toBe(true)
+    expect(installed.files[0].revision).toBe(newRevision)
+  })
+
   it('picks up where a dropped connection stopped with a range request', async () => {
     let dropped = false
     const hub = fakeHub({ [QWEN]: qwenRepo() }, (path) => {
