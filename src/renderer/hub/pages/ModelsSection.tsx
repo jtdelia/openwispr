@@ -316,7 +316,10 @@ function isRole(task: ModelTask): task is ModelRole {
 
 function UseButton({ role, modelId }: { role: ModelRole; modelId: string }) {
   return (
-    <button className="button" onClick={() => void api.updateSettings({ [role]: { kind: 'builtIn', modelId } })}>
+    <button
+      className="button"
+      onClick={() => void api.updateSettings({ [role]: { kind: 'builtIn', modelId } })}
+    >
       Use for {ROLE_LABELS[role]}
     </button>
   )

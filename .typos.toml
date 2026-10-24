@@ -1,0 +1,6 @@
+[files]
+extend-exclude = ["scripts/fixtures/*"]
+
+[default.extend-words]
+Speaches = "Speaches"
+unparseable = "unparseable"

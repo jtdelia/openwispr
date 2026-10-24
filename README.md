@@ -55,7 +55,7 @@ registered shortcut, so `fn + Space` never types a space.
 
 ## Getting started
 
-Requirements: macOS 13+ (macOS 26+ for Apple's speech-to-text), Node 20+, Xcode 26+ (Swift 6.2+), and an *Apple Development*
+Requirements: macOS 13+ (macOS 26+ for Apple's speech-to-text), Node 22.12+, Xcode 26+ (Swift 6.2+), and an *Apple Development*
 signing certificate in your keychain (Xcode → Settings → Accounts → Manage Certificates → + → Apple
 Development; a free Apple account is enough).
 
@@ -109,6 +109,15 @@ Use the packaged app when you need permissions to behave as they will for users.
 app asks for Speech Recognition (macOS kills a process that asks on behalf of an app without a usage
 description); unpackaged, Apple's speech-to-text runs without asking.
 
+The same entry points used by CI are available locally:
+
+| Command | What it does |
+| --- | --- |
+| `make lint` | Type-check the TypeScript app |
+| `make test` | Run the Vitest suite |
+| `make build` | Build the Electron app and Swift executables |
+| `make check` | Run all three checks |
+
 ## Scripts
 
 | Script | Purpose |
@@ -140,3 +149,12 @@ Hugging Face repo, pinned revision, files, sizes and hashes. Settings → *Built
 Recommended models (shipped with the app, not fetched), resumes interrupted downloads, and verifies every
 file before marking the model installed: SHA-256 for Git LFS files, the Git blob hash for small files,
 which is all Hugging Face publishes for them. Downloaded models can't be selected until their engine ships.
+
+## Contributing
+
+See [CONTRIBUTING.md](CONTRIBUTING.md). Report security problems privately as described
+in [SECURITY.md](SECURITY.md).
+
+## License
+
+[MIT](LICENSE)

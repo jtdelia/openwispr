@@ -1,0 +1,80 @@
+name: AI review
+
+# Reviews a pull request once when it opens ready for review, and again each time a
+# draft is marked ready. Comment "/oc review this again" for another pass on demand.
+on:
+  pull_request:
+    types: [opened, ready_for_review]
+
+concurrency:
+  group: ai-review-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+permissions: {}
+
+jobs:
+  review:
+    # Skip drafts, forks (their tokens are read-only), Dependabot, and agent pull requests,
+    # which open as drafts and get reviewed when marked ready.
+    if: >-
+      !github.event.pull_request.draft &&
+      github.event.pull_request.head.repo.full_name == github.repository &&
+      github.actor != 'dependabot[bot]' &&
+      !(github.event.action == 'opened' && startsWith(github.head_ref, 'opencode/'))
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      issues: write
+      pull-requests: write
+    env:
+      OPENCODE_PERMISSION: >-
+        {"edit": "deny", "webfetch": "deny",
+         "bash": {"*": "deny", "git diff*": "allow", "git log*": "allow", "git show*": "allow"}}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - id: model
+        uses: ./.github/actions/pick-free-model
+
+      - name: Load the review prompt
+        id: prompt
+        run: |
+          {
+            echo 'text<<PROMPT_EOF'
+            cat .github/opencode/review-prompt.md
+            echo 'PROMPT_EOF'
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Review with the best free model
+        id: primary
+        if: steps.model.outputs.primary != ''
+        continue-on-error: true
+        uses: anomalyco/opencode/github@e3c4eb242585dcd77be1a867391b7c25fd47ce52 # v1.19.3
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          model: ${{ steps.model.outputs.primary }}
+          use_github_token: true
+          share: false
+          prompt: ${{ steps.prompt.outputs.text }}
+
+      - name: Retry with the next free model
+        id: fallback
+        if: steps.primary.outcome == 'failure' && steps.model.outputs.fallback != ''
+        continue-on-error: true
+        uses: anomalyco/opencode/github@e3c4eb242585dcd77be1a867391b7c25fd47ce52 # v1.19.3
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          model: ${{ steps.model.outputs.fallback }}
+          use_github_token: true
+          share: false
+          prompt: ${{ steps.prompt.outputs.text }}
+
+      - name: Report that no review model succeeded
+        if: steps.primary.outcome != 'success' && steps.fallback.outcome != 'success'
+        run: echo "::warning title=No review::No free OpenCode review model succeeded."
