@@ -15,7 +15,7 @@ updates:
     schedule:
       interval: weekly
     commit-message:
-      prefix: deps
+      prefix: chore
     groups:
       npm:
         patterns: ["*"]
@@ -25,7 +25,17 @@ updates:
     schedule:
       interval: weekly
     commit-message:
-      prefix: deps
+      prefix: chore
+    groups:
+      swift:
+        patterns: ["*"]
+
+  - package-ecosystem: swift
+    directory: /native/helper
+    schedule:
+      interval: weekly
+    commit-message:
+      prefix: chore
     groups:
       swift:
         patterns: ["*"]

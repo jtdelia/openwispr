@@ -39,11 +39,18 @@ jobs:
           listed=$(printf '%s\n' "$BODY" \
             | awk '/^### Blocked by/ {on=1; next} /^### / {on=0} on' \
             | grep -oE '#[0-9]+' | tr -d '#' || true)
-          linked=$(gh api "repos/$GITHUB_REPOSITORY/issues/$ISSUE/dependencies/blocked_by" \
-            --jq '.[].number' 2>/dev/null || true)
+          if ! linked=$(gh api "repos/$GITHUB_REPOSITORY/issues/$ISSUE/dependencies/blocked_by" \
+            --jq '.[].number'); then
+            echo "::error title=Blocker check failed::Could not read linked blockers."
+            exit 1
+          fi
           open=()
           for n in $(printf '%s\n%s\n' "$listed" "$linked" | sort -un); do
-            if [ "$(gh issue view "$n" --json state --jq .state)" = "OPEN" ]; then open+=("#$n"); fi
+            if ! state=$(gh issue view "$n" --json state --jq .state); then
+              echo "::error title=Blocker check failed::Could not read issue #$n."
+              exit 1
+            fi
+            if [ "$state" = "OPEN" ]; then open+=("#$n"); fi
           done
           if [ "${#open[@]}" -gt 0 ]; then
             gh issue comment "$ISSUE" --body "Not starting: still blocked by ${open[*]}. Re-add \`ready-for-agent\` once they are closed."
@@ -105,7 +112,9 @@ jobs:
           if ! printf '%s' "$TITLE" | grep -qE '^[a-z]+(\([^)]+\))?!?: '; then
             TITLE="${type:-feat}: $TITLE"
           fi
-          gh pr ready "$pr" --undo
+          if [ "$(gh pr view "$pr" --json isDraft --jq .isDraft)" != "true" ]; then
+            gh pr ready "$pr" --undo
+          fi
           gh pr edit "$pr" --title "$TITLE"
 
       - name: Remove the ready-for-agent label

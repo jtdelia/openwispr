@@ -55,7 +55,7 @@ registered shortcut, so `fn + Space` never types a space.
 
 ## Getting started
 
-Requirements: macOS 13+ (macOS 26+ for Apple's speech-to-text), Node 20+, Xcode 26+ (Swift 6.2+), and an *Apple Development*
+Requirements: macOS 13+ (macOS 26+ for Apple's speech-to-text), Node 22.12+, Xcode 26+ (Swift 6.2+), and an *Apple Development*
 signing certificate in your keychain (Xcode → Settings → Accounts → Manage Certificates → + → Apple
 Development; a free Apple account is enough).
 

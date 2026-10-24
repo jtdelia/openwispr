@@ -4,6 +4,9 @@
   "version": "0.1.0",
   "description": "Open-source voice dictation for macOS, modeled on Wispr Flow",
   "license": "MIT",
+  "engines": {
+    "node": ">=22.12.0"
+  },
   "main": "out/main/index.js",
   "scripts": {
     "setup": "node node_modules/electron/install.js && npm run native:build",

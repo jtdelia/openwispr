@@ -83,14 +83,6 @@ else
   warn "could not create the branch ruleset. Private repositories need GitHub Pro, Team, or Enterprise for this."
 fi
 
-step "Kiro CLI fallback reviewer (optional)"
-echo "When no free OpenCode model works, the AI review falls back to Kiro CLI."
-echo "That needs a KIRO_API_KEY from a paid Kiro plan (Pro or higher)."
-read -r -p "Set the KIRO_API_KEY secret now? [y/N] " answer
-if [[ "$answer" =~ ^[Yy] ]]; then
-  gh secret set KIRO_API_KEY --repo "$repo"
-fi
-
 step "Remaining manual step"
 cat <<EOF
 Install the OpenCode GitHub app on $repo:
