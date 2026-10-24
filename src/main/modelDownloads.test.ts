@@ -184,11 +184,13 @@ describe('Verifying downloads', () => {
 
   it('stops a download that runs past the published size instead of filling the disk', async () => {
     const endless = () => new Response(new ReadableStream({ pull: (controller) => controller.enqueue(new Uint8Array(1000)) }))
-    const m = models(fakeHub({ [QWEN]: qwenRepo() }, (path) => (path === 'model.safetensors' ? endless() : undefined)))
+    const hub = fakeHub({ [QWEN]: qwenRepo() }, (path) => (path === 'model.safetensors' ? endless() : undefined))
+    const m = models(hub)
 
     await expect(m.download('qwen3-4b-instruct-2507')).rejects.toThrow(
       'model.safetensors is larger than Hugging Face lists it, so it was discarded',
     )
+    expect(weightRequests(hub)).toEqual([null])
     expect((await status(m, 'qwen3-4b-instruct-2507')).state).toMatchObject({ kind: 'paused', bytesDone: 22 })
   })
 })
@@ -245,22 +247,41 @@ describe('Cancelling, removing and disk usage', () => {
     expect((await m.library()).diskUsageBytes).toBe(29 + whisperManifest)
   })
 
-  it('unloads a removed model from the running model process, so a reinstall loads its new files', async () => {
-    const process = recordingModelProcess()
+  it('unloads a removed model once requests using it finish, so a reinstall loads its new files', async () => {
+    const requests: ModelRequest[] = []
+    const held: Array<() => void> = []
+    const transport: ModelProcessTransport = {
+      start: (handlers) => ({
+        send(request) {
+          requests.push(request)
+          const answer = () => handlers.message({ type: 'response', id: request.id, result: {} })
+          if (request.type === 'load') held.push(answer)
+          else queueMicrotask(answer)
+        },
+        stop: () => queueMicrotask(() => handlers.exit(null)),
+      }),
+    }
     const m = models(
       fakeHub({
         [WHISPERKIT]: { 'openai_whisper-small_216MB/config.json': text('{"d_model":768}') },
         [WHISPER_SMALL]: { 'tokenizer.json': text('{"model":{}}'), 'tokenizer_config.json': text('{}') },
       }),
       32 * GB,
-      { transport: process.transport },
+      { transport },
     )
     await m.download('whisper-small')
-    await vi.waitFor(() => expect(process.requests.map((r) => r.type)).toEqual(['load']))
+    await vi.waitFor(() => expect(held).toHaveLength(1))
 
-    await m.removeModel('whisper-small')
+    const removing = m.removeModel('whisper-small')
+    await new Promise((resolve) => setTimeout(resolve, 10))
+    expect(requests.map((r) => r.type)).toEqual(['load'])
+    expect(existsSync(join(dir, 'whisper-small/config.json'))).toBe(true)
 
-    expect(process.requests.at(-1)).toEqual({ id: expect.any(Number), type: 'unload', models: ['whisper-small'] })
+    held[0]()
+    await removing
+
+    expect(requests.at(-1)).toEqual({ id: expect.any(Number), type: 'unload', models: ['whisper-small'] })
+    expect(existsSync(join(dir, 'whisper-small'))).toBe(false)
   })
 })
 

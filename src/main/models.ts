@@ -14,7 +14,15 @@ import {
 import { isRunnable, type ModelEntry, type ModelLibrary, type ModelStatus, type RepoCheck } from '../shared/modelLibrary'
 import { checkHubRepo } from './hubCompatibility'
 import { ModelDownloads, type ModelManifest } from './modelDownloads'
-import { ModelError, ModelProcess, type ModelProcessTransport, type ModelRef, type TranscribeResult } from './modelProcess'
+import {
+  ModelError,
+  ModelProcess,
+  type ModelProcessTransport,
+  type ModelRef,
+  type ModelRequestBody,
+  type ModelResults,
+  type TranscribeResult,
+} from './modelProcess'
 import { RECOMMENDED_MODELS } from './recommendedModels'
 import { cleanupMaxTokens, cleanupMessages, sanitizeCleanup, type CleanupInput } from './textProcessing'
 import {
@@ -111,6 +119,8 @@ export class Models extends EventEmitter<{ progress: [ModelProgress] }> {
   private installed = new Map<string, ModelManifest>()
   private readonly loads = new Map<string, Promise<void>>()
   private readonly preparing = new Set<string>()
+  /** Model process requests in flight, by the downloaded model they read. */
+  private readonly inUse = new Map<string, Set<Promise<unknown>>>()
   /** Resolves once the installed models have been read, which `availability` relies on. */
   readonly ready: Promise<void>
 
@@ -122,6 +132,7 @@ export class Models extends EventEmitter<{ progress: [ModelProgress] }> {
       dir: deps.modelsDir,
       retryDelayMs: deps.retryDelayMs ?? 2000,
       onChange: () => this.libraryChanged(),
+      release: (id) => this.release(id),
     })
     this.ready = this.refreshInstalled()
   }
@@ -195,13 +206,6 @@ export class Models extends EventEmitter<{ progress: [ModelProgress] }> {
     if (role) {
       const name = this.installed.get(id)?.name ?? id
       throw new Error(`${name} is selected for ${ROLE_NAMES[role]}. Choose another model in Settings before removing it`)
-    }
-    // The model process keeps one engine per folder; free it so a reinstall under this id loads afresh.
-    if (this.process.running && this.installed.has(id)) {
-      await this.process.request({ type: 'unload', models: [id] }).catch((error: unknown) => {
-        console.warn('[models] unloading a removed model failed', error)
-        this.process.stop()
-      })
     }
     const freed = await this.downloads.remove(id)
     await this.refreshInstalled()
@@ -317,7 +321,7 @@ export class Models extends EventEmitter<{ progress: [ModelProgress] }> {
     const chat = this.builtIn('chat')
     if (chat === null) return complete(this.deps.fetch, this.endpoint('chat'), messages, options)
     if ('unavailable' in chat) throw new ModelError('unavailable', chat.unavailable)
-    return (await this.process.request({ type: 'complete', model: chat.model, messages, maxTokens })).text.trim()
+    return (await this.request(chat.model, { type: 'complete', model: chat.model, messages, maxTokens })).text.trim()
   }
 
   /**
@@ -370,7 +374,7 @@ export class Models extends EventEmitter<{ progress: [ModelProgress] }> {
   private async transcribeBuiltIn(model: string, wav: Buffer, prompt: string, segments: boolean): Promise<TranscribeResult> {
     const { language } = this.deps.settings()
     try {
-      return await this.process.request({ type: 'transcribe', model, audio: wav.toString('base64'), language, prompt, segments })
+      return await this.request(model, { type: 'transcribe', model, audio: wav.toString('base64'), language, prompt, segments })
     } catch (error) {
       if (error instanceof ModelError && error.code === 'unsupportedLanguage') {
         const isWhisper = this.installed.get(model)?.engine === 'whisperKit'
@@ -419,8 +423,7 @@ export class Models extends EventEmitter<{ progress: [ModelProgress] }> {
     const name = this.installed.get(id)?.name ?? id
     const { language } = this.deps.settings()
     const timer = setTimeout(() => this.setPreparing(id, name, true), PREPARING_AFTER_MS)
-    const load = this.process
-      .request({ type: 'load', models: [{ role, id, language }] })
+    const load = this.request(id, { type: 'load', models: [{ role, id, language }] })
       .then(() => undefined)
       .finally(() => {
         clearTimeout(timer)
@@ -447,6 +450,37 @@ export class Models extends EventEmitter<{ progress: [ModelProgress] }> {
         console.warn('[models] preparing a downloaded model failed', error),
       )
     }
+  }
+
+  /** Sends the model process a request that reads model `id`'s files, tracked so `release` can wait for it. */
+  private request<K extends 'transcribe' | 'complete' | 'load'>(
+    id: string,
+    body: Extract<ModelRequestBody, { type: K }>,
+  ): Promise<ModelResults[K]> {
+    const request = this.process.request<K>(body)
+    const using = this.inUse.get(id) ?? new Set<Promise<unknown>>()
+    this.inUse.set(id, using)
+    using.add(request)
+    const settle = () => {
+      using.delete(request)
+      if (using.size === 0 && this.inUse.get(id) === using) this.inUse.delete(id)
+    }
+    request.then(settle, settle)
+    return request
+  }
+
+  /**
+   * Waits for requests using the model to finish, then has the model process unload it and forget its
+   * engine, which holds the files and what the manifest said; a reinstall under this id then loads afresh.
+   */
+  private async release(id: string): Promise<void> {
+    if (!this.installed.has(id)) return
+    for (let using = this.inUse.get(id); using; using = this.inUse.get(id)) await Promise.allSettled(using)
+    if (!this.process.running) return
+    await this.process.request({ type: 'unload', models: [id] }).catch((error: unknown) => {
+      console.warn('[models] unloading a model failed; stopping the model process instead', error)
+      this.process.stop()
+    })
   }
 
   private physicalMemoryBytes(): number {
