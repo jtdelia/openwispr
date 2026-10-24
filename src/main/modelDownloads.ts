@@ -90,6 +90,7 @@ export class ModelDownloads {
     const job = this.jobs.get(id)
     job?.controller.abort()
     await job?.done.catch(() => undefined)
+    await this.deps.release(id)
     await rm(this.folder(id), { recursive: true, force: true })
     this.errors.delete(id)
     this.deps.onChange()

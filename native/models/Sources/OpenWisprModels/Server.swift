@@ -43,9 +43,9 @@ final class EnginesByFolder<Engine: Sendable>: Sendable {
         }
     }
 
-    /// Forgets the folder's engine, which holds what its manifest said when it was created.
-    func evict(_ model: DownloadedModel) {
-        _ = engines.withLock { $0.removeValue(forKey: model.folder) }
+    /// Forgets the folder's engine, which holds what its manifest said when it was created; returns it to unload.
+    func evict(_ folder: URL) -> Engine? {
+        engines.withLock { $0.removeValue(forKey: folder) }
     }
 }
 
@@ -155,12 +155,16 @@ struct Server: Sendable {
             return Empty()
         case let .unload(ids):
             for id in ids {
-                if let engine = try? speechToText(id) { await engine.unload() }
-                if let engine = try? chat(id) { await engine.unload() }
-                if let model = try? DownloadedModel.installed(id, in: modelsDir) {
-                    whisper.evict(model)
-                    mlxChat.evict(model)
+                if id == "apple" {
+                    await appleSpeech.unload()
+                    await appleChat.unload()
+                    continue
                 }
+                // By folder, not manifest: a model being replaced or removed may no longer count as installed.
+                guard let folder = try? DownloadedModel.folder(id, in: modelsDir) else { continue }
+                await whisper.evict(folder)?.unload()
+                await mlxChat.evict(folder)?.unload()
+                await parakeet.unload(folder)
             }
             return Empty()
         case let .status(language, speechToTextModel, chatModel):

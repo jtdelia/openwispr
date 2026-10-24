@@ -9,8 +9,8 @@ final class Whisper: Sendable {
         engines.engine(for: model, create: WhisperKitEngine.init)
     }
 
-    func evict(_ model: DownloadedModel) {
-        engines.evict(model)
+    func evict(_ folder: URL) -> WhisperKitEngine? {
+        engines.evict(folder)
     }
 }
 
