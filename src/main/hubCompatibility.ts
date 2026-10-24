@@ -38,6 +38,8 @@ const CORE_ML_MEMORY_FACTOR = 1.7
 
 /** swift-transformers loads a tokenizer from these two files only. */
 const MLX_TOKENIZER = ['tokenizer.json', 'tokenizer_config.json']
+/** Far above real configs and chat templates (a tokenizer_config.json is at most a few MB). */
+const MAX_TEXT_FILE_BYTES = 32e6
 const FIND_MLX = 'Look for an MLX version, often from mlx-community'
 
 /** A `RepoCheck` before `Models` weighs a compatible model against this Mac's memory. */
@@ -180,9 +182,7 @@ async function whisperKit(fetch: Fetch, ref: Pinned, files: Listed[]): Promise<H
     ...['config.json'].filter((rel) => !has(rel)),
   ]
   if (missing.length > 0) throw missingFiles(ref, missing, 'WhisperKit needs')
-  const config = JSON.parse(
-    await readRepoFile(fetch, { repo: ref.repo, revision: ref.revision, path: path(ref, 'config.json') }),
-  ) as WhisperConfig
+  const config = JSON.parse(await readSmallFile(fetch, ref, files, 'config.json')) as WhisperConfig
   const tokenizerRepo = whisperTokenizerRepo(config)
   if (tokenizerRepo === null) {
     throw new Rejected('unsupportedArchitecture', `${label(ref)} has a config.json that isn't one of the Whisper models WhisperKit runs`)
@@ -278,7 +278,7 @@ function fluidAudio(ref: Pinned, files: Listed[]): HubRepoCheck {
 async function mlx(fetch: Fetch, ref: Pinned, info: RepoInfo, files: Listed[]): Promise<HubRepoCheck> {
   const top = files.filter((f) => !f.rel.includes('/'))
   const has = (rel: string) => top.some((f) => f.rel === rel)
-  const read = (rel: string) => readRepoFile(fetch, { repo: ref.repo, revision: ref.revision, path: path(ref, rel) })
+  const read = (rel: string) => readSmallFile(fetch, ref, top, rel)
   if (!has('config.json')) throw missingFiles(ref, ['config.json'], 'MLX models need')
   const config = JSON.parse(await read('config.json')) as MlxConfig
   const bits = mlxBits(ref, config)
@@ -343,6 +343,7 @@ function missingShards(top: Listed[]): string[] {
   const shard = top.map((f) => f.rel.match(/^(.*)-(\d+)-of-(\d+)\.safetensors$/)).find((m) => m !== null)
   if (!shard) return []
   const [, stem, index, count] = shard
+  if (Number(count) > top.length) return [`most of the ${count} shards of ${stem}.safetensors`]
   return Array.from({ length: Number(count) }, (_, i) => `${stem}-${String(i + 1).padStart(index.length, '0')}-of-${count}.safetensors`)
 }
 
@@ -358,6 +359,15 @@ function mlxSpeed(weightBytes: number): SpeedTier {
   if (weightBytes < 3.5e9) return 'fast'
   if (weightBytes < 8e9) return 'medium'
   return 'slow'
+}
+
+/** Reads a config or template the listing shows as small, since a repo can publish any size. */
+async function readSmallFile(fetch: Fetch, ref: Pinned, files: Listed[], rel: string): Promise<string> {
+  const size = files.find((f) => f.rel === rel)?.size ?? 0
+  if (size > MAX_TEXT_FILE_BYTES) {
+    throw new Rejected('missingFiles', `${label(ref)} has a ${rel} of ${Math.round(size / 1e6)} MB, too large to be a real one`)
+  }
+  return readRepoFile(fetch, { repo: ref.repo, revision: ref.revision, path: path(ref, rel) })
 }
 
 function missingFiles(ref: RepoReference, missing: string[], needs: string): Rejected {

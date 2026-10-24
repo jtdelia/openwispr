@@ -147,12 +147,31 @@ export class ModelDownloads {
     const files = (await Promise.all(entry.sources.map((source) => this.plan(source, signal)))).flat()
     const folder = this.folder(entry.id)
     const manifest: ModelManifest = { ...entry, userAdded, installed: false, files }
+    await this.removeStale(entry.id, files)
     await mkdir(folder, { recursive: true })
     await writeFile(join(folder, MANIFEST), JSON.stringify(manifest, null, 2))
     job.totalBytes = files.reduce((sum, file) => sum + file.size, 0)
     job.bytesDone = await this.bytesOnDisk(entry.id, files)
     for (const file of files) await this.fetchFile(folder, file, job)
     await writeFile(join(folder, MANIFEST), JSON.stringify({ ...manifest, installed: true }, null, 2))
+  }
+
+  /**
+   * Files are skipped once their size matches, so when a model is downloaded again at another revision,
+   * delete those of the earlier one that changed or are gone first.
+   */
+  private async removeStale(id: string, files: ManifestFile[]): Promise<void> {
+    const previous = await this.manifest(id)
+    if (!previous) return
+    const folder = this.folder(id)
+    const current = new Map(files.map((file) => [file.localPath, file]))
+    const stale = previous.files.filter((old) => {
+      const next = current.get(old.localPath)
+      return next === undefined || next.gitOid !== old.gitOid || next.sha256 !== old.sha256
+    })
+    await Promise.all(
+      stale.flatMap((file) => [join(folder, file.localPath), join(folder, file.localPath) + PART]).map((p) => rm(p, { force: true })),
+    )
   }
 
   private async plan(source: ModelSource, signal: AbortSignal): Promise<ManifestFile[]> {
@@ -237,6 +256,12 @@ export class ModelDownloads {
           if (done) break
           clearTimeout(timer)
           timer = setTimeout(() => stall.abort(new Error('Download stalled')), STALL_TIMEOUT_MS)
+          offset += value.length
+          if (offset > file.size) {
+            await handle.truncate(0)
+            job.bytesDone -= offset - value.length
+            throw new Error(`${file.path} is larger than Hugging Face lists it, so it was discarded`)
+          }
           await handle.write(value)
           this.progress(job, value.length)
         }

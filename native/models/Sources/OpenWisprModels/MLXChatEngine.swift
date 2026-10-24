@@ -30,6 +30,10 @@ final class MLXChat: Sendable {
         return engines.engine(for: model, create: MLXChatEngine.init)
     }
 
+    func evict(_ model: DownloadedModel) {
+        engines.evict(model)
+    }
+
     func status(for model: DownloadedModel) throws -> DownloadedChatStatus {
         DownloadedChatStatus(model: model.id, name: model.name, contextSize: try MLXChatEngine.contextSize(of: model))
     }

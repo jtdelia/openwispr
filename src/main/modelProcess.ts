@@ -135,6 +135,10 @@ export class ModelProcess {
     })
   }
 
+  get running(): boolean {
+    return this.connection !== null
+  }
+
   stop(): void {
     this.clearIdleTimer()
     const connection = this.connection

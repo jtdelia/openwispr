@@ -196,6 +196,13 @@ export class Models extends EventEmitter<{ progress: [ModelProgress] }> {
       const name = this.installed.get(id)?.name ?? id
       throw new Error(`${name} is selected for ${ROLE_NAMES[role]}. Choose another model in Settings before removing it`)
     }
+    // The model process keeps one engine per folder; free it so a reinstall under this id loads afresh.
+    if (this.process.running && this.installed.has(id)) {
+      await this.process.request({ type: 'unload', models: [id] }).catch((error: unknown) => {
+        console.warn('[models] unloading a removed model failed', error)
+        this.process.stop()
+      })
+    }
     const freed = await this.downloads.remove(id)
     await this.refreshInstalled()
     return freed

@@ -42,6 +42,11 @@ final class EnginesByFolder<Engine: Sendable>: Sendable {
             return engine
         }
     }
+
+    /// Forgets the folder's engine, which holds what its manifest said when it was created.
+    func evict(_ model: DownloadedModel) {
+        _ = engines.withLock { $0.removeValue(forKey: model.folder) }
+    }
 }
 
 extension SpeechToTextEngine {
@@ -152,6 +157,10 @@ struct Server: Sendable {
             for id in ids {
                 if let engine = try? speechToText(id) { await engine.unload() }
                 if let engine = try? chat(id) { await engine.unload() }
+                if let model = try? DownloadedModel.installed(id, in: modelsDir) {
+                    whisper.evict(model)
+                    mlxChat.evict(model)
+                }
             }
             return Empty()
         case let .status(language, speechToTextModel, chatModel):

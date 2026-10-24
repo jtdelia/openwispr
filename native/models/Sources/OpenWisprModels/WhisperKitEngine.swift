@@ -8,6 +8,10 @@ final class Whisper: Sendable {
     func engine(for model: DownloadedModel) -> WhisperKitEngine {
         engines.engine(for: model, create: WhisperKitEngine.init)
     }
+
+    func evict(_ model: DownloadedModel) {
+        engines.evict(model)
+    }
 }
 
 /// A downloaded Whisper model in WhisperKit's Core ML format. The first load of a model compiles it for the

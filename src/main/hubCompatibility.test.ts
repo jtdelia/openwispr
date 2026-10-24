@@ -1,4 +1,4 @@
-import { mkdtemp, rm } from 'node:fs/promises'
+import { mkdtemp, readFile, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
@@ -195,6 +195,27 @@ describe('Adding a compatible repo', () => {
     const other = models(hub({}))
     expect(await other.removeModel(ID)).toBeGreaterThan(5145)
     expect((await other.library()).models.some((s) => s.model.id === ID)).toBe(false)
+  })
+
+  it('replaces files that changed when added again at a newer revision, even when their size did not', async () => {
+    const NEWER = 'c'.repeat(40)
+    const newWeights = Buffer.alloc(WEIGHTS.length, 9)
+    const h = hub({
+      [`${REPO}@${SHA}`]: mlxRepo(),
+      [`${REPO}@${NEWER}`]: { ...mlxRepo(), 'model.safetensors': { content: newWeights, lfs: true } },
+    })
+    const m = models(h)
+    const first = await m.checkRepo(REPO)
+    if (first.kind !== 'compatible') throw new Error(first.message)
+    await m.addModel(first.model)
+
+    const newer = await m.checkRepo(`https://huggingface.co/${REPO}/tree/${NEWER}`)
+    if (newer.kind !== 'compatible') throw new Error(newer.message)
+    await m.addModel(newer.model)
+
+    expect(await readFile(join(dir, ID, 'model.safetensors'))).toEqual(newWeights)
+    expect(downloadedPaths(h).filter((p) => p === 'model.safetensors')).toHaveLength(2)
+    expect(downloadedPaths(h).filter((p) => p === 'tokenizer.json')).toHaveLength(1)
   })
 })
 
@@ -458,6 +479,11 @@ describe('Checking an MLX repo', () => {
       },
       message: 'model-00002-of-00003.safetensors',
     },
+    {
+      missing: 'shards its file list has no room for',
+      repo: { ...without('model.safetensors'), 'model-00001-of-1000000000.safetensors': { content: WEIGHTS, lfs: true } },
+      message: 'most of the 1000000000 shards of model.safetensors',
+    },
   ])('rejects MLX weights without $missing', async ({ repo, message }) => {
     const h = hub({ [`mlx-community/Qwen3.5-4B-4bit@${SHA}`]: repo })
 
@@ -466,6 +492,17 @@ describe('Checking an MLX repo', () => {
       reason: 'missingFiles',
       message: `mlx-community/Qwen3.5-4B-4bit is missing ${message}, which MLX models need`,
     })
+  })
+
+  it('rejects a config.json too large to be real without reading it', async () => {
+    const h = hub({ [`mlx-community/Qwen3.5-4B-4bit@${SHA}`]: { ...mlxRepo(), 'config.json': { content: Buffer.alloc(40e6) } } })
+
+    expect(await models(h).checkRepo('mlx-community/Qwen3.5-4B-4bit')).toEqual({
+      kind: 'rejected',
+      reason: 'missingFiles',
+      message: 'mlx-community/Qwen3.5-4B-4bit has a config.json of 40 MB, too large to be a real one',
+    })
+    expect(downloadedPaths(h)).toEqual([])
   })
 
   it('accepts a model only the vision registry knows as a vision model', async () => {

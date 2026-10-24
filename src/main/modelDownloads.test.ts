@@ -181,6 +181,16 @@ describe('Verifying downloads', () => {
     )
     expect(existsSync(join(dir, 'qwen3-4b-instruct-2507/config.json'))).toBe(false)
   })
+
+  it('stops a download that runs past the published size instead of filling the disk', async () => {
+    const endless = () => new Response(new ReadableStream({ pull: (controller) => controller.enqueue(new Uint8Array(1000)) }))
+    const m = models(fakeHub({ [QWEN]: qwenRepo() }, (path) => (path === 'model.safetensors' ? endless() : undefined)))
+
+    await expect(m.download('qwen3-4b-instruct-2507')).rejects.toThrow(
+      'model.safetensors is larger than Hugging Face lists it, so it was discarded',
+    )
+    expect((await status(m, 'qwen3-4b-instruct-2507')).state).toMatchObject({ kind: 'paused', bytesDone: 22 })
+  })
 })
 
 describe('Cancelling, removing and disk usage', () => {
@@ -233,6 +243,24 @@ describe('Cancelling, removing and disk usage', () => {
     expect((await status(m, 'qwen3-4b-instruct-2507')).state).toEqual({ kind: 'notDownloaded' })
     expect((await status(m, 'whisper-small')).state.kind).toBe('installed')
     expect((await m.library()).diskUsageBytes).toBe(29 + whisperManifest)
+  })
+
+  it('unloads a removed model from the running model process, so a reinstall loads its new files', async () => {
+    const process = recordingModelProcess()
+    const m = models(
+      fakeHub({
+        [WHISPERKIT]: { 'openai_whisper-small_216MB/config.json': text('{"d_model":768}') },
+        [WHISPER_SMALL]: { 'tokenizer.json': text('{"model":{}}'), 'tokenizer_config.json': text('{}') },
+      }),
+      32 * GB,
+      { transport: process.transport },
+    )
+    await m.download('whisper-small')
+    await vi.waitFor(() => expect(process.requests.map((r) => r.type)).toEqual(['load']))
+
+    await m.removeModel('whisper-small')
+
+    expect(process.requests.at(-1)).toEqual({ id: expect.any(Number), type: 'unload', models: ['whisper-small'] })
   })
 })
 
