@@ -47,7 +47,7 @@ What OpenWispr still lacks compared with Wispr Flow 1.6.1102, in the order we pl
 - Automations.
 - Whisper mode (very quiet dictation).
 - Sound themes.
-- Public distribution: Developer ID signing, notarization, updates.
+- Automatic updates for public builds.
 - Lens (last).
 
 ## Not planned

@@ -7,6 +7,7 @@ export default {
   forceCodeSigning: true,
   files: ['out/**/*', 'package.json'],
   directories: { output: 'dist' },
+  artifactName: '${productName}-${version}-${arch}.${ext}',
   // Every native executable the main process spawns, launched from Resources when packaged.
   extraResources: [
     { from: 'native/helper/.build/release/openwispr-helper', to: 'openwispr-helper' },
@@ -15,15 +16,22 @@ export default {
     { from: 'native/models/.build/release/mlx.metallib', to: 'mlx.metallib' },
   ],
   mac: {
-    target: 'dir',
+    target: [{ target: 'dmg', arch: ['arm64'] }],
     category: 'public.app-category.productivity',
-    hardenedRuntime: false,
+    hardenedRuntime: true,
     gatekeeperAssess: false,
-    notarize: false,
+    notarize: process.env.OPENWISPR_NOTARIZE === 'true',
     extendInfo: {
       NSMicrophoneUsageDescription: 'OpenWispr listens to your microphone while you dictate or record a meeting.',
       NSSpeechRecognitionUsageDescription: 'OpenWispr turns your speech into text on this Mac.',
       NSAudioCaptureUsageDescription: 'OpenWispr records call audio for the Notetaker.',
     },
+  },
+  dmg: {
+    title: '${productName} ${version}',
+    contents: [
+      { x: 130, y: 220, type: 'file' },
+      { x: 410, y: 220, type: 'link', path: '/Applications' },
+    ],
   },
 }

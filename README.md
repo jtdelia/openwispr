@@ -132,6 +132,9 @@ The same entry points used by CI are available locally:
 | `npm run models:build` | Build the Swift model process only |
 | `npm run models:smoke -- [clip.wav] [--language en] [--prompt text] [--model apple] [--models-dir dir]` | Transcribe a 16 kHz mono WAV through Apple’s model or a downloaded one (like `whisper-small` or `parakeet-tdt-0.6b-v3`) and print latency |
 
+See [`docs/releasing.md`](docs/releasing.md) for signing credentials and the
+tag-based macOS release process.
+
 ## Not implemented (yet)
 
 See [`docs/roadmap.md`](docs/roadmap.md): built-in local models come first, then Command and
