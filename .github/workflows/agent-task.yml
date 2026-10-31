@@ -80,7 +80,7 @@ jobs:
         id: primary
         if: steps.model.outputs.primary != ''
         continue-on-error: true
-        uses: anomalyco/opencode/github@e3c4eb242585dcd77be1a867391b7c25fd47ce52 # v1.19.3
+        uses: anomalyco/opencode/github@1097e2668b1e08ad63bdf0b1c4860b9bc01e420c # v2.2.0
         with:
           model: ${{ steps.model.outputs.primary }}
           share: false
@@ -90,7 +90,7 @@ jobs:
         id: fallback
         if: steps.primary.outcome == 'failure' && steps.model.outputs.fallback != ''
         continue-on-error: true
-        uses: anomalyco/opencode/github@e3c4eb242585dcd77be1a867391b7c25fd47ce52 # v1.19.3
+        uses: anomalyco/opencode/github@1097e2668b1e08ad63bdf0b1c4860b9bc01e420c # v2.2.0
         with:
           model: ${{ steps.model.outputs.fallback }}
           share: false
