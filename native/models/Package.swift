@@ -6,11 +6,11 @@ let package = Package(
     platforms: [.macOS("26.0")],
     dependencies: [
         // No traits: skips the NeMo text-normalization binary, which only FluidAudio's text-to-speech uses.
-        .package(url: "https://github.com/FluidInference/FluidAudio", exact: "0.17.7", traits: []),
+        .package(url: "https://github.com/FluidInference/FluidAudio", exact: "0.18.2", traits: []),
         .package(url: "https://github.com/argmaxinc/argmax-oss-swift", exact: "1.1.1"),
         .package(url: "https://github.com/ml-explore/mlx-swift", exact: "0.32.3"),
         .package(url: "https://github.com/ml-explore/mlx-swift-lm", exact: "3.32.3"),
-        .package(url: "https://github.com/huggingface/swift-transformers", exact: "1.3.5"),
+        .package(url: "https://github.com/huggingface/swift-transformers", exact: "1.4.0"),
     ],
     targets: [
         .executableTarget(
