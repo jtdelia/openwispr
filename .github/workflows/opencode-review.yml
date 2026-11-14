@@ -53,7 +53,7 @@ jobs:
         id: primary
         if: steps.model.outputs.primary != ''
         continue-on-error: true
-        uses: anomalyco/opencode/github@e3c4eb242585dcd77be1a867391b7c25fd47ce52 # v1.19.3
+        uses: anomalyco/opencode/github@fedc6f208aa2bd54c1019227214568083f6380ad # v2.2.7
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
@@ -66,7 +66,7 @@ jobs:
         id: fallback
         if: steps.primary.outcome == 'failure' && steps.model.outputs.fallback != ''
         continue-on-error: true
-        uses: anomalyco/opencode/github@e3c4eb242585dcd77be1a867391b7c25fd47ce52 # v1.19.3
+        uses: anomalyco/opencode/github@fedc6f208aa2bd54c1019227214568083f6380ad # v2.2.7
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
